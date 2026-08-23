@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DG-LAB Control Panel</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <div class="brand">
+        <div class="brand-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+        </div>
+        <h1>DG-LAB Control Panel</h1>
+      </div>
+      <div class="sub">talks to the V3 and V4 relays as an ordinary controller, on both at once</div>
+    </div>
+    <div class="header-actions">
+      <div class="summary-chip">
+        <span class="dot" id="summary-dot"></span>
+        <span id="summary-text">No device paired</span>
+      </div>
+      <button class="btn" id="reconnect-btn">
+        <svg class="icon-spin" id="reconnect-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+        Reconnect both
+      </button>
+    </div>
+  </header>
+
+  <div class="card-row" style="--cols: 4fr 8fr;">
+  <section class="card card-in" style="animation-delay: 20ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1"/></svg></div>
+      <div class="card-title">Status</div>
+    </div>
+    <div class="status-row">
+      <div class="status-row-left">
+        <span class="dot" id="status-dot-v4"></span>
+        <span class="tag tag-v4">V4</span>
+        <span id="status-label-v4">-</span>
+      </div>
+      <span id="active-badge-v4" class="active-badge" hidden>active</span>
+    </div>
+    <div class="status-row">
+      <div class="status-row-left">
+        <span class="dot" id="status-dot-v3"></span>
+        <span class="tag tag-v3">V3</span>
+        <span id="status-label-v3">-</span>
+      </div>
+      <span id="active-badge-v3" class="active-badge" hidden>active</span>
+    </div>
+    <dl class="meta">
+      <dt>Active device</dt><dd class="mono" id="active-device">none</dd>
+      <dt>Channel A</dt><dd class="mono" id="strength-a">-</dd>
+      <dt>Channel B</dt><dd class="mono" id="strength-b">-</dd>
+      <dt>Last button</dt><dd class="mono" id="button-action">-</dd>
+    </dl>
+  </section>
+
+  <section class="card card-in" style="animation-delay: 80ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 20v.01"/></svg></div>
+      <div class="card-title">Pair your phone</div>
+    </div>
+    <div class="qr-pair">
+      <div class="qr-wrap">
+        <div class="qr-box" id="qr-box-v4"><span class="qr-placeholder">Waiting for controller id&hellip;</span></div>
+        <div class="qr-meta">
+          <span class="tag tag-v4">V4 &middot; recommended</span>
+          <div class="pair-link mono" id="pair-link-v4"></div>
+        </div>
+      </div>
+      <div class="qr-wrap">
+        <div class="qr-box" id="qr-box-v3"><span class="qr-placeholder">Waiting for controller id&hellip;</span></div>
+        <div class="qr-meta">
+          <span class="tag tag-v3">V3 &middot; legacy</span>
+          <div class="pair-link mono" id="pair-link-v3"></div>
+        </div>
+      </div>
+    </div>
+    <div class="note">
+      Both relays run at once &mdash; scan whichever QR matches your DG-LAB APP version. Whichever device pairs
+      most recently is the one the controls below drive.
+    </div>
+  </section>
+  </div>
+
+  <div class="card-row" style="--cols: 5fr 7fr;">
+  <section class="card card-in" style="animation-delay: 140ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg></div>
+      <div class="card-title">Strength</div>
+    </div>
+    <div class="disabled-note" id="controls-disabled-note" hidden>No device paired on either protocol &mdash; pair your phone above to enable these controls.</div>
+    <fieldset class="controls" id="strength-controls">
+      <div class="channel">
+        <div class="channel-head">
+          <span class="channel-title">Channel A</span>
+          <span class="channel-value mono" id="strength-a-inline">-<span class="cap" id="strength-a-cap"></span></span>
+        </div>
+        <div class="slider-row">
+          <input type="range" class="strength-slider" id="slider-a" min="0" max="200" step="1" value="0" data-channel="A">
+        </div>
+        <div class="row">
+          <button class="btn icon" data-strength='{"channel":"A","op":"dec"}'>&minus;</button>
+          <button class="btn icon" data-strength='{"channel":"A","op":"inc"}'>+</button>
+        </div>
+        <div class="row limit-row">
+          <label for="limit-a-value">Upper limit</label>
+          <input type="number" id="limit-a-value" min="0" placeholder="none">
+          <button class="btn small" data-limit-set="A" data-value-input="limit-a-value">Set</button>
+          <button class="btn small" data-limit-clear="A">Clear</button>
+          <span class="limit-current mono" id="limit-a-current">no limit</span>
+        </div>
+      </div>
+      <div class="channel">
+        <div class="channel-head">
+          <span class="channel-title">Channel B</span>
+          <span class="channel-value mono" id="strength-b-inline">-<span class="cap" id="strength-b-cap"></span></span>
+        </div>
+        <div class="slider-row">
+          <input type="range" class="strength-slider" id="slider-b" min="0" max="200" step="1" value="0" data-channel="B">
+        </div>
+        <div class="row">
+          <button class="btn icon" data-strength='{"channel":"B","op":"dec"}'>&minus;</button>
+          <button class="btn icon" data-strength='{"channel":"B","op":"inc"}'>+</button>
+        </div>
+        <div class="row limit-row">
+          <label for="limit-b-value">Upper limit</label>
+          <input type="number" id="limit-b-value" min="0" placeholder="none">
+          <button class="btn small" data-limit-set="B" data-value-input="limit-b-value">Set</button>
+          <button class="btn small" data-limit-clear="B">Clear</button>
+          <span class="limit-current mono" id="limit-b-current">no limit</span>
+        </div>
+      </div>
+    </fieldset>
+    <div class="note">
+      On V4, "Set" is emulated as a relative adjustment from the last known strength (V4's wire protocol has no
+      direct "set to exact value" command) &mdash; it's rejected if no baseline is known yet.
+    </div>
+  </section>
+
+  <section class="card card-in" style="animation-delay: 180ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h3l2-8 4 16 3-11 2 3h6"/></svg></div>
+      <div class="card-title">Pulse waveform</div>
+    </div>
+    <fieldset class="controls" id="pulse-controls">
+      <div class="channel">
+        <div class="channel-head">
+          <span class="channel-title">Channel A</span>
+        </div>
+        <div class="row">
+          <label class="field-label" for="pulse-time-a">Duration (s)</label>
+          <input type="number" id="pulse-time-a" value="3" min="1" max="30">
+          <label class="field-label" for="preset-trigger-a">Preset</label>
+          <div class="preset-picker" id="preset-picker-a">
+            <button type="button" class="preset-trigger" id="preset-trigger-a" aria-haspopup="listbox" aria-expanded="false">
+              <svg class="preset-spark" id="preset-spark-a" viewBox="0 0 44 16" preserveAspectRatio="none"></svg>
+              <span class="preset-trigger-label" id="preset-trigger-label-a">Loading&hellip;</span>
+              <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="preset-menu" id="preset-menu-a" role="listbox" hidden></div>
+          </div>
+          <button class="btn primary" id="trigger-preset-a">Trigger preset</button>
+          <button class="btn" data-clear="A" title="Stop the waveform currently running on this channel">Stop</button>
+        </div>
+        <div class="row" style="margin-top:10px; align-items: flex-start;">
+          <textarea id="custom-waveform-a" placeholder='Custom waveform, e.g. A:["0A0A0A0A0A0A0A0A", ...] or a legacy string'></textarea>
+          <button class="btn" id="trigger-custom-a">Send custom</button>
+        </div>
+      </div>
+      <div class="channel">
+        <div class="channel-head">
+          <span class="channel-title">Channel B</span>
+        </div>
+        <div class="row">
+          <label class="field-label" for="pulse-time-b">Duration (s)</label>
+          <input type="number" id="pulse-time-b" value="3" min="1" max="30">
+          <label class="field-label" for="preset-trigger-b">Preset</label>
+          <div class="preset-picker" id="preset-picker-b">
+            <button type="button" class="preset-trigger" id="preset-trigger-b" aria-haspopup="listbox" aria-expanded="false">
+              <svg class="preset-spark" id="preset-spark-b" viewBox="0 0 44 16" preserveAspectRatio="none"></svg>
+              <span class="preset-trigger-label" id="preset-trigger-label-b">Loading&hellip;</span>
+              <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            <div class="preset-menu" id="preset-menu-b" role="listbox" hidden></div>
+          </div>
+          <button class="btn primary" id="trigger-preset-b">Trigger preset</button>
+          <button class="btn" data-clear="B" title="Stop the waveform currently running on this channel">Stop</button>
+        </div>
+        <div class="row" style="margin-top:10px; align-items: flex-start;">
+          <textarea id="custom-waveform-b" placeholder='Custom waveform, e.g. A:["0A0A0A0A0A0A0A0A", ...] or a legacy string'></textarea>
+          <button class="btn" id="trigger-custom-b">Send custom</button>
+        </div>
+      </div>
+    </fieldset>
+    <div class="note">
+      Presets are sourced from <code>dglab-kit</code>'s official waveform library. "Coyote" patterns target Coyote 3.0
+      hardware (what V3 supports); "OVC" (Opossum) patterns are bundled for completeness but designed for different
+      hardware, so they may not feel meaningful on a Coyote device. For anything not in this list, paste your own
+      frame data into the custom field, and start at low strength. On V4, custom/preset text must use the
+      "&lt;prefix&gt;:[...]" frame-array format &mdash; raw legacy strings aren't supported by V4's wire protocol.
+    </div>
+  </section>
+  </div>
+
+  <div class="card-row" style="--cols: 5fr 7fr;">
+  <section class="card card-in" style="animation-delay: 240ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 5.64a9 9 0 1 1-12.72 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg></div>
+      <div class="card-title">Webhook</div>
+    </div>
+    <div class="row">
+      <input type="text" id="webhook-url-input" placeholder="https://your-endpoint.example/hook" style="flex:1; min-width:260px;">
+      <button class="btn primary" id="webhook-set-btn">Set</button>
+      <button class="btn" id="webhook-clear-btn">Clear</button>
+    </div>
+    <div class="note mono" id="webhook-current">No webhook configured.</div>
+    <div class="note">
+      When set, every event below (pairing, disconnects, strength/soft-limit updates, button-shape presses, errors) is
+      POSTed as JSON to this URL as it happens, tagged with <code>protocol: "v3"|"v4"</code> &mdash; e.g. a Discord/Slack
+      incoming-webhook URL, or your own endpoint. Button-shape presses include a best-effort <code>channel</code>/<code>shape</code>
+      label determined by testing against real hardware (not from any official spec) &mdash; treat it as a hint, not
+      guaranteed-correct.
+    </div>
+  </section>
+
+  <section class="card card-in" style="animation-delay: 280ms;">
+    <div class="card-header" style="justify-content: space-between;">
+      <div style="display:flex; align-items:center; gap:10px;">
+        <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div>
+        <div class="card-title">Log</div>
+      </div>
+      <span class="log-count mono" id="log-count">0 events</span>
+    </div>
+    <div id="log"></div>
+  </section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<script src="/assets/app.js"></script>
+</body>
+</html>
