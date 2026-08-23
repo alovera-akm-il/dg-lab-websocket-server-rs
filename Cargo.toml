@@ -1,0 +1,23 @@
+[package]
+name = "dg-lab-websocket-server-rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_urlencoded = "0.7"
+uuid = { version = "1", features = ["v4"] }
+rand = "0.9"
+tokio-util = "0.7"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+tokio-tungstenite = "0.26"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
+flexi_logger = { version = "0.31", default-features = false }
+log = "0.4"
+percent-encoding = "2.3"
+rust-embed = { version = "8.12.0", default-features = false, features = ["mime-guess"] }
