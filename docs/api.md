@@ -1,0 +1,609 @@
+# API reference
+
+Three independent APIs, one per server. See [architecture.md](architecture.md)
+for how they relate and [sequence-diagrams.md](sequence-diagrams.md) for
+message flows over time.
+
+- [V3 relay (WebSocket)](#v3-relay-websocket) — `:10002` by default
+- [V4 relay (WebSocket)](#v4-relay-websocket) — `:10001` by default
+- [Control panel (HTTP)](#control-panel-http) — `:40000` by default
+
+All JSON examples below are exact wire shapes taken directly from the source
+(`src/v3/handler.rs`, `src/v3/protocol.rs`, `src/v4/handler.rs`,
+`src/panel/handler.rs`, `src/panel/commands.rs`), not paraphrased.
+
+---
+
+## V3 relay (WebSocket)
+
+1 controller ("web") : 1 device ("app") pairing relay. Every message is a
+JSON object; there is no binary framing.
+
+### Connecting and pairing
+
+There is no fixed path — **any** path is upgrade-eligible, because the path
+tail doubles as an implicit `targetId`. On connect, the server always
+replies first with the connection's own id:
+
+```json
+{"type":"bind","clientId":"<uuid>","targetId":"","message":"targetId"}
+```
+
+To pair, the connecting side supplies a target id one of three ways, checked
+in this order:
+
+1. `?targetId=<id>` query parameter
+2. `?tid=<id>` query parameter
+3. The URL path tail (e.g. `ws://host:10002/<id>`) — this is what the
+   control panel's pairing QR uses
+
+If a `targetId` was supplied at connect time and pairing succeeds, **both**
+sides receive:
+
+```json
+{"type":"bind","clientId":"<controllerId>","targetId":"<deviceId>","message":"200"}
+```
+
+Pairing can also be requested explicitly after connecting, by either side
+sending a `bind` frame:
+
+```json
+{"type":"bind","clientId":"<controllerId>","targetId":"<deviceId>","message":""}
+```
+
+`clientId`/`targetId` here name the *intended* web/app pair, not necessarily
+the sender — but the sender's own real connection id must equal one of them
+(`validate_source`), or the request is rejected with error code `404`.
+
+**Bind result codes** (the `message` field of the `bind` response):
+
+| Code | Meaning |
+| --- | --- |
+| `200` | Paired (or already paired with this exact partner — idempotent) |
+| `400` | Rejected: one of the two ids is already bound to someone else |
+| `401` | Rejected: self-pairing, or one of the ids isn't a connected client |
+
+A connection whose `targetId` (from the query/path, not a `bind` frame) is
+already bound to someone else, or doesn't exist, is rejected at connect time
+with:
+
+```json
+{"type":"error","clientId":"","targetId":"<targetId>","message":"4001"}
+```
+
+followed by a WebSocket close with code `4001`.
+
+### Strength control (`type` 1–3)
+
+Sent by the controller only. `channel` accepts `1`/`"1"`/`"A"`/`"a"` for
+channel A, `2`/`"2"`/`"B"`/`"b"` for channel B; omitted defaults to A (an
+explicit invalid value is rejected outright, never silently defaulted).
+
+| `type` | Meaning | Extra fields |
+| --- | --- | --- |
+| `1` | Increase by 1 | — |
+| `2` | Decrease by 1 | — |
+| `3` | Set to an exact value | `strength: <number>` |
+
+```json
+{"type":1,"clientId":"<controllerId>","targetId":"<deviceId>","channel":"A","message":"set channel"}
+```
+
+Forwarded to the device as:
+
+```json
+{"type":"msg","clientId":"<controllerId>","targetId":"<deviceId>","message":"strength-<channel#>+<sendType>+<value>"}
+```
+
+where `channel# ` is `1`/`2` and `sendType = type - 1` (so `0`=inc, `1`=dec,
+`2`=set with `value` = the requested `strength`; inc/dec always carry
+`value=1`).
+
+### Clear / custom strength (`type` 4)
+
+```json
+{"type":4,"clientId":"<controllerId>","targetId":"<deviceId>","channel":"A","message":"clear"}
+```
+
+If `message` contains the substring `"clear"`, the device receives
+`"clear-<channel#>"` and any in-flight pulse sequence on that channel is
+cancelled; the controller then receives a `notify` (see
+[below](#wire-fidelity-note-two-chinese-strings)). Otherwise this is a
+"custom strength" set: the device receives `"strength-<channel#>+2+<strength>"`
+using the frame's `strength` field.
+
+### Pulse waveform (`clientMsg`)
+
+```json
+{"type":"clientMsg","clientId":"<controllerId>","targetId":"<deviceId>","channel":"A","time":3,"message":"A:[\"0A0A0A0A0A0A0A0A\"]"}
+```
+
+- `message` is either `"<prefix>:<JSON array of 16-hex-char frame strings>"`
+  (parsed and repacketized — the channel letter in the *output* always
+  matches the resolved `channel` field, not the prefix in `message`) or, if
+  that shape doesn't parse, treated as a raw legacy string and passed
+  through as `pulse-<message>` unmodified, repeated for the packet count.
+- `time` (seconds) defaults to `DEFAULT_PUNISHMENT_DURATION` (env, default
+  `5`) if omitted or non-positive.
+- Packets are sent at a rate of `DEFAULT_PUNISHMENT_TIME` per second (env,
+  clamped to `[1, 10]`), each packet:
+
+  ```json
+  {"type":"msg","clientId":"<controllerId>","targetId":"<deviceId>","message":"pulse-A:[\"0A0A0A0A0A0A0A0A\"]"}
+  ```
+
+- If a pulse is already running on the same (controller, channel), the
+  running one is cancelled, the device gets an immediate `clear-<channel#>`,
+  the controller gets a `notify` warning (see below), and the new sequence
+  starts after a fixed 150ms delay.
+- When the sequence completes (or is replaced/cancelled), the controller
+  receives a `notify` "done" frame (see below).
+
+### Device feedback (device → controller)
+
+The device reports two kinds of message, forwarded to the controller
+unmodified (matched by prefix, not parsed/routed like controller commands):
+
+```json
+{"type":"msg","clientId":"<deviceId>","targetId":"<controllerId>","message":"feedback-<n>"}
+```
+
+`n` is `0`–`9`, one per physical shape button on the DG-LAB APP's control
+screen. **This channel/shape mapping is not documented in any known official
+spec** — it was determined empirically against real hardware (see the doc
+comment on `decode_button_feedback` in `src/panel/relay_client.rs`):
+
+| `n` | Channel | Shape |
+| --- | --- | --- |
+| 0 | A | circle |
+| 1 | A | triangle |
+| 2 | A | square |
+| 3 | A | star |
+| 4 | A | hexagon |
+| 5 | B | circle |
+| 6 | B | triangle |
+| 7 | B | square |
+| 8 | B | star |
+| 9 | B | hexagon |
+
+```json
+{"type":"msg","clientId":"<deviceId>","targetId":"<controllerId>","message":"strength-<a>+<b>+<softLimitA>+<softLimitB>"}
+```
+
+The device's current strength on each channel, plus its own
+device/app-configured soft limit per channel (V3 has no wire command to set
+this remotely — see the panel's [Upper limit](#upper-limit-1) feature for the
+application-level alternative).
+
+### Wire-fidelity note: two Chinese strings
+
+Two `notify` messages are sent verbatim in Chinese, matching the reference
+TypeScript server's spec byte-for-byte — this project deliberately does not
+translate them on the wire, since third-party controllers built against the
+original spec may pattern-match on the literal string:
+
+```json
+{"type":"notify","clientId":"<controllerId>","targetId":"<deviceId>","message":"发送完毕"}
+```
+Sent when a pulse sequence finishes sending (all packets dispatched, or the
+target disconnected mid-stream).
+
+```json
+{"type":"notify","clientId":"<controllerId>","targetId":"<deviceId>","message":"当前通道A有正在发送的消息，覆盖之前的消息"}
+```
+Sent when a new pulse sequence pre-empts one already running on the same
+channel (`A`/`B` substituted for the actual channel). The control panel
+translates both of these for its own display only (`relay_client::translate_notify`);
+the bytes on the wire are untouched.
+
+### Errors (`type: "error"`)
+
+```json
+{"type":"error","clientId":"<clientId-or-empty>","targetId":"<targetId-or-empty>","message":"<code>"}
+```
+
+| Code | Meaning |
+| --- | --- |
+| `403` | Malformed frame (invalid JSON, not an object, missing/invalid `type`/`clientId`/`targetId`/`message`, or empty id) |
+| `404` | Illegal source (sender isn't `clientId` or `targetId`), or the intended recipient isn't currently connected |
+| `402` | The `clientId`/`targetId` pair named in the frame isn't actually paired |
+| `406` | An explicitly-present `channel` field has an unrecognized value |
+| `idle_timeout` | Connection stayed unpaired past `IDLE_TIMEOUT` — followed by a close with code `1000` |
+
+### Disconnection
+
+When either side of a pairing disconnects, the other receives:
+
+```json
+{"type":"break","clientId":"<the-other-sides-id>","targetId":"<the-closer's-id>","message":"209"}
+```
+
+followed by a WebSocket close (code `1000`, reason `partner_disconnected`).
+
+### Heartbeat
+
+Every connection receives `{"type":"heartbeat"}` every `HEARTBEAT_INTERVAL`
+ms (default `60000`); no response is required or expected.
+
+---
+
+## V4 relay (WebSocket)
+
+1 controller : N devices relay. The relay itself treats payloads under
+`data` as fully opaque — it doesn't parse or validate them, only routes by
+device id — but they aren't actually freeform in practice; see
+["The `data` schema real DG-LAB 4 APPs use"](#the-data-schema-real-dg-lab-4-apps-use)
+below for what a real controller/APP exchange actually puts there.
+
+### Connecting
+
+Only under the configured `PREFIX` path (default `/`) — any other path is
+`404`. No `targetId`/`tid` query param → registers as a **controller**; with
+one → attaches as a **device** under that controller.
+
+Every connection first receives:
+
+```json
+{"type":"hello","clientId":"<8-hex-char id>"}
+```
+
+**Controller** (no target): starts a zero-devices idle timer (`IDLE_TIMEOUT`,
+default 5 min), cancelled as soon as any device attaches and restarted if
+the device count drops back to zero.
+
+**Device** (`?targetId=<controllerId>` or `?tid=`): if the controller id
+doesn't exist, the device gets
+
+```json
+{"type":"error","code":"controller_not_found"}
+```
+
+followed by a close (code `4001`). On success, the device gets
+
+```json
+{"type":"controller_attached","clientId":"<controllerId>"}
+```
+
+and the controller gets
+
+```json
+{"type":"client_attached","clientId":"<deviceId>"}
+```
+
+### Sending data
+
+Controller → device (`clientId` names the target device):
+
+```json
+{"type":"message","clientId":"<deviceId>","data":{"anything":"here"}}
+```
+
+The device receives `{"type":"message","data":{...}}` (no `clientId` — it
+only ever has one controller). If `clientId` is missing, the controller gets
+`{"type":"error","code":"bad_request","message":"message.clientId is required"}`;
+if the named device isn't attached under this controller,
+`{"type":"error","code":"client_not_found","clientId":"<deviceId>"}`.
+
+Device → controller (no `clientId` needed — the hub already knows which
+controller owns this device):
+
+```json
+{"type":"message","data":{"anything":"here"}}
+```
+
+The controller receives `{"type":"message","clientId":"<deviceId>","data":{...}}`.
+
+### The `data` schema real DG-LAB 4 APPs use
+
+The relay itself never looks inside `data` — but it isn't actually
+freeform in practice. [`dglab-kit`](https://github.com/dungeonlab-open/dglab-kit),
+the official SDK for the DG-LAB 4 APP, documents a full RPC schema it puts
+there, and the control panel's V4 support (`src/panel/v4_commands.rs`,
+`src/panel/v4_client.rs`) implements this schema, not an invented one.
+Three frame kinds, tagged by `t`:
+
+```json
+{"t":"req","reqId":"<id>","m":"<method>","data":{...}}   // controller -> device
+{"t":"resp","reqId":"<id>","result":{...}}                // device -> controller, on success
+{"t":"resp","reqId":"<id>","error":"<code>"}               // device -> controller, on failure
+{"t":"ev","ev":"<name>",...}                                // device -> controller, unprompted
+```
+
+**RPC methods**: `devices.get` (no params → `{"devices":[...]}`, the
+current device list on demand), `ping` (no params → the device's local
+timestamp, for RTT measurement), `device.op` (enqueue a device action,
+below), `device.op.clear` (cancel queued/running actions).
+
+**`device.op` request** — `data` is:
+
+```json
+{"s": "<slotId>", "t": <ActionType>, "c": 0 | 1, "p": 0 | 1 | 2, "d": <ms>, "im": <bool>, "v": <depends on t>}
+```
+
+`s`=target device's slotId, `c`=channel (`0`=A, `1`=B), `p`=priority
+(default 1), `d`=duration ms (default 0 = not time-limited), `im`=replace
+any already-queued task of the same device/channel/type. `t` selects the
+action and what `v` means:
+
+| `t` | Action | `v` | Lifecycle |
+| --- | --- | --- | --- |
+| `0` | `AppendPulseData` | `number[][] \| string[]` — waveform frames (`ver:3` hex-string form, e.g. `"0A0A0A0A00000000"`, is what the panel sends) | continuous |
+| `3` | `AddIntensity` | signed relative delta | one-shot |
+| `4` | `SetTempIntensity` | temporary strength value, auto-reverts to `0` when the task ends | continuous |
+| `5` | `SetMute` | `boolean` | one-shot |
+| `7` | `SetIntensity` | must be `0` — **V4 has no action for an arbitrary absolute value** | one-shot |
+
+`device.op` doesn't respond on enqueue — only once the task completes, is
+cleared, replaced, or cancelled (connection drop). The panel doesn't wait
+on this; it fires the request and moves on, so nothing here is required
+for the panel's own command flow to work. On completion:
+
+```json
+{"t":"resp","reqId":"<id>","result":{"type":<ActionType>,"reason":"completed"|"cleared"|"replaced"|"cancelled","slotId":"<id>","channel":0|1}}
+```
+
+**`device.op.clear` request** — `data` (all optional): `{"s":"<slotId>","c":0|1}`.
+Omit `s` to clear every device's tasks; `s` alone clears one device's every
+channel; `s`+`c` clears one channel. Always resolves `{}` on success.
+
+**Events** (`t:"ev"`, unprompted):
+
+| `ev` | Fields | Fires when |
+| --- | --- | --- |
+| `devices.snapshot` | `devices: [{slotId, name, type, props?, slotState?}]` | Immediately after `controller_attached` — the APP's full device list, even if empty |
+| `devices.patch` | `added?: [...]` (full entries), `removed?: [slotId,...]` | The APP's device list changes |
+| `slots.patch` | `slots: [{slotId, props?, slotState?}]` | Per-device state changed — `props`/`slotState` here are *deltas*, only the changed fields |
+| `custom.action` | `action: 0-9` | An on-screen/physical button press — dglab-kit documents this as the same underlying concept as V3's `feedback-*`, just under a different event name |
+
+For a Coyote device (`type: "COYOTE_030"`), `props` includes
+`intensityA`/`intensityB` (current per-channel strength — what the panel
+reads) alongside `power` (battery %), `channelAStatus`/`channelBStatus`,
+and others; there's no single documented soft-limit field the way V3 has
+one. Full field references for every supported device type are in
+`dglab-kit`'s README under "V4 设备 props / slotState 字段参考".
+
+### App-level ping (independent of native WS ping/pong)
+
+```json
+{"type":"ping"}
+```
+→
+```json
+{"type":"pong","ts":<unix-ms>}
+```
+
+Separately, the server also sends native WebSocket ping frames every
+`WS_PING_INTERVAL` ms (default `10000`); a connection that misses
+`MAX_MISSED_WS_PONGS` (default `3`) consecutive native pongs is terminated
+(close code `4002`, reused for the idle timeout too).
+
+### Disconnection
+
+- Controller disconnects → every attached device gets
+  `{"type":"controller_disconnected","clientId":"<controllerId>"}` then a
+  close (code `4000`).
+- Device disconnects → its controller gets
+  `{"type":"client_disconnected","clientId":"<deviceId>"}`; if that was the
+  controller's last device, its zero-devices idle timer restarts.
+
+### Heartbeat
+
+Every connection receives `{"type":"heartbeat"}` every `HEARTBEAT_INTERVAL`
+ms (default `30000`).
+
+---
+
+## Control panel (HTTP)
+
+All request/response bodies are JSON except where noted. There is no
+authentication — the panel is intended for trusted-network / localhost use.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/` | The panel page (`assets/index.html`) |
+| `GET` | `/assets/{file}` | The panel's CSS/JS (`style.css`, `app.js`) -- see [architecture.md](architecture.md) on how these are embedded |
+| `GET` | `/events` | Server-Sent Events stream of the panel's live state |
+| `GET` | `/api/presets` | The bundled pulse-waveform preset catalog |
+| `GET` | `/api/qr/{v3\|v4}` | The pairing QR for one protocol, on demand |
+| `POST` | `/api/strength` | Increase / decrease / set a channel's strength |
+| `POST` | `/api/clear` | Clear a channel (cancels any in-flight pulse) |
+| `POST` | `/api/pulse` | Send a pulse waveform |
+| `POST` | `/api/limit` | Set/clear a channel's operator upper limit |
+| `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
+| `POST` | `/api/reconnect` | Force a fresh relay connection (new controller id/QR) |
+
+### `GET /events` (SSE)
+
+Emits one event immediately on connect (a full snapshot), then one more
+every time anything changes. Each event's `data` is:
+
+```json
+{
+  "status": "connecting" | "waiting_for_device" | "paired" | "disconnected",
+  "controllerId": "<uuid>" | null,
+  "deviceId": "<uuid>" | null,
+  "v4Status": "connecting" | "waiting_for_device" | "paired" | "disconnected",
+  "v4ControllerId": "<8-hex-char id>" | null,
+  "v4DeviceId": "<APP's V4 connection id>" | null,
+  "v4DeviceName": "<string>" | null,
+  "activeProtocol": "v3" | "v4" | null,
+  "strengthA": <number> | null,
+  "strengthB": <number> | null,
+  "softLimitA": <number> | null,
+  "softLimitB": <number> | null,
+  "lastButtonAction": <0-9> | null,
+  "limitA": <number> | null,
+  "limitB": <number> | null,
+  "webhookUrl": "<string>" | null,
+  "log": ["<line>", "..."],
+  "qrSvg": "<svg>...</svg>" | null,
+  "pairUrl": "https://www.dungeon-lab.com/app-download.php#DGLAB-SOCKET#ws://..." | null,
+  "qrSvgV4": "<svg>...</svg>" | null,
+  "pairUrlV4": "https://dungeon-lab.cn/s/?v=1&action=socket&url=..." | null
+}
+```
+
+`qrSvg`/`pairUrl` are `null` until `controllerId` is known (i.e. before the
+panel's own V3 connection completes); `qrSvgV4`/`pairUrlV4` likewise wait on
+`v4ControllerId`. Both QRs' embedded host is derived per-connection from that
+request's `Host` header (see [architecture.md](architecture.md) and the
+README's "Pairing over WiFi" section) — two browsers viewing the panel from
+different addresses can see different QR codes for the same underlying
+controller ids.
+
+`activeProtocol` is which leg — if either — currently drives
+`strengthA`/`strengthB`/`softLimitA`/`softLimitB`/`lastButtonAction` and the
+`/api/strength`, `/api/clear`, `/api/pulse` endpoints below: whichever
+protocol's device paired most recently, falling back to the other protocol's
+device if it's still paired when the active one disconnects, else `null`. V3
+and V4 pairing are tracked fully independently and can both be live at once
+(the panel runs both relay connections simultaneously) — only one drives the
+shared controls at a time. See [architecture.md](architecture.md) and
+`src/panel/state.rs`'s module docs for the exact rules and their rationale.
+
+### `GET /api/presets`
+
+```json
+[
+  {"id": "coyote-...", "label": "...", "family": "coyote" | "ovc", "waveform": "A:[\"...\",...]"}
+]
+```
+
+44 entries total (24 Coyote, 20 OVC), sourced from `dglab-kit`'s
+`COYOTE_WAVEFORMS`/`OVC_WAVEFORMS` and cross-verified byte-for-byte
+(`src/panel/presets.rs`). `waveform` is ready to pass straight through as
+`POST /api/pulse`'s `waveform` field.
+
+### `GET /api/qr/{protocol}`
+
+`{protocol}` is `v3` or `v4`. Returns that protocol's pairing QR on demand,
+independent of holding an `/events` SSE connection open (e.g. for a client
+that just wants to fetch, display, or print the current code):
+
+```json
+{"qrSvg": "<svg>...</svg>", "pairUrl": "https://..."}
+```
+
+Same `Host`-header-based host resolution as the embedded QRs in `/events`
+(see above) — the returned QR reflects whichever address this specific
+request came in on. `400` if `{protocol}` isn't `v3`/`v4`; `503` if that
+protocol's controller id isn't known yet (its relay connection hasn't
+completed).
+
+### `POST /api/strength`, `/api/clear`, `/api/pulse`
+
+These three route transparently to whichever protocol's device is
+currently active (`activeProtocol` in `/events` — see above): a V3 device
+gets `commands::*_frame`'s V3 wire shapes ([above](#v3-relay-websocket)); a
+V4 device gets `device.op`/`device.op.clear` RPC requests
+([above](#v4-relay-websocket)), built by `src/panel/v4_commands.rs`
+following `dglab-kit`'s documented schema.
+
+```json
+// POST /api/strength
+{"channel": "A" | "B" | "a" | "b" | "1" | "2", "op": "inc" | "dec" | "set", "value": <number, required for "set">}
+
+// POST /api/clear
+{"channel": "A" | "B"}
+
+// POST /api/pulse
+{"channel": "A" | "B", "time": <seconds, default 3>, "waveform": "<preset string or custom frame data>"}
+```
+
+Common status codes:
+
+- `200 OK` — command sent.
+- `400` — invalid channel/op, empty `waveform`, or (`inc`/`set` only) the
+  predicted resulting strength would exceed that channel's configured
+  [upper limit](#upper-limit-1).
+- `409` — no device currently paired on either protocol.
+- `503` — the active protocol's relay connection isn't currently ready to
+  send.
+
+V4-specific cases:
+
+- **`POST /api/strength` with `op: "set"`**: V4's wire protocol has no
+  action for setting an arbitrary absolute strength — only a relative
+  `AddIntensity` delta or resetting to exactly `0` via `SetIntensity`, see
+  [the `data` schema section above](#the-data-schema-real-dg-lab-4-apps-use).
+  The panel emulates "set" as an `AddIntensity` delta computed from the
+  last known strength. If no baseline is known yet (nothing received from
+  this device's `devices.snapshot`/`slots.patch` since it attached),
+  there's nothing to compute a delta from and the request is rejected
+  with **`409`** rather than guessing.
+- **`POST /api/pulse`**: V4 has no raw-legacy-string fallback the way V3
+  does — `waveform` must parse as the `"<prefix>:[...]"` frame-array
+  format (same parser V3 uses, `v3::pulse::parse_pulse_message`) or the
+  request is rejected with **`400`**. `time` (seconds) is converted to
+  milliseconds for V4's `d` field.
+
+### `POST /api/limit`
+
+<a id="upper-limit-1"></a>
+Sets an application-level safety cap: the panel refuses any `inc`/`set`
+command on that channel that would push its (best-known) strength above this
+value. This is **not** a device-level setting — V3 has no wire command to
+change the device's own configured limit remotely; the device's own limit is
+only ever visible read-only, as `softLimitA`/`softLimitB` in `/events`.
+
+```json
+{"channel": "A" | "B", "value": <number> | null}
+```
+`value: null` (or omitted) clears the limit. `400` if `value` is negative.
+Survives the panel's own relay reconnects (it's operator configuration, not
+device state).
+
+### `POST /api/webhook`
+
+```json
+{"url": "https://..." | null}
+```
+`url: null` (or omitted, or empty after trimming) clears the webhook.
+`400` if a non-empty `url` doesn't start with `http://` or `https://`.
+See [Webhook payloads](#webhook-payloads) below for what gets posted where.
+
+### `POST /api/reconnect`
+
+No body. Drops the panel's current V3 **and** V4 connections immediately
+(instead of waiting out the normal 2s reconnect backoff on each) and
+establishes fresh ones, yielding new controller ids and thus new pairing
+QRs on both. Always `200 OK`.
+
+---
+
+## Webhook payloads
+
+Configured via `PANEL_WEBHOOK_URL` or `POST /api/webhook`. Every line the
+panel logs internally — from either protocol — also fires a `POST` to this
+URL — delivery is fire-and-forget with a 5s timeout; failures are only
+logged to the server's own stdout, never fed back into the panel's own log
+or another webhook call (so a broken endpoint can't create a notification
+loop).
+
+Every payload has at minimum:
+
+```json
+{"message": "<human-readable log line>", "timestamp": "<RFC3339 UTC>"}
+```
+
+Events the panel can classify add an `event` field, a `protocol` field
+(`"v3"` or `"v4"` — which leg the event came from), and event-specific
+fields, merged into the same object:
+
+| `event` | Extra fields | Fires when |
+| --- | --- | --- |
+| `controller_connected` | `controllerId` | The panel (re)connects to V3 or V4 and gets a new controller id |
+| `paired` | `deviceId` | A device pairs on V3, or an APP attaches on V4 |
+| `bind_failed` | `code` (`"400"` \| `"401"`) | V3 rejects the panel's own bind attempt (V3 only) |
+| `device_disconnected` | — | The paired V3 device, or the attached V4 APP, disconnects |
+| `error` | `code` | The relay sends the panel a protocol `error` frame |
+| `button_feedback` | `code` (0-9), `channel` (`"A"`\|`"B"`), `shape` | A shape button is tapped — V3's `feedback-*` or V4's `custom.action`, same mapping either way, see the [table above](#device-feedback-device--controller) |
+| `device_status` | `strengthA`, `strengthB`, `softLimitA`, `softLimitB` (V3 only) | The device reports its current state |
+| `relay_error` | `error` | The panel's own connection to that leg's local relay fails |
+| `relay_disconnected` | — | The panel's connection to that leg's local relay drops, before it reconnects |
+
+Anything else the panel logs (commands it sent, manual limit/webhook
+changes, unclassified `notify`/`feedback` text) still fires the webhook with
+just `message`/`timestamp` — no `event` field. See
+[sequence-diagrams.md #4](sequence-diagrams.md#4-physical-button-press--webhook)
+for the full path from device tap to delivered POST.
