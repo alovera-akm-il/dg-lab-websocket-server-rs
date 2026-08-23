@@ -1,6 +1,6 @@
 # DG-LAB WebSocket Server (Rust)
 
-A Rust port of [dglab-websocket-server](https://github.com/dungeonlab-open/dglab-kit/), the WebSocket relay server for the [DGLAB KIT](https://github.com/dungeonlab-open/dglab-kit/) — providing the same relay between third-party control clients and the DG-LAB APP that the original TypeScript/Bun implementation (`v3-server.ts` / `v4-server.ts`) provides, with matching message shapes, error/close codes, and env var names.
+A Rust port of [dglab-websocket-server](https://github.com/dungeonlab-open/dglab-websocket-server), the WebSocket relay server for the [DGLAB KIT](https://github.com/dungeonlab-open/dglab-kit/) — providing the same relay between third-party control clients and the DG-LAB APP that the original TypeScript/Bun implementation (`v3-server.ts` / `v4-server.ts`) provides, with matching message shapes, error/close codes, and env var names. See [`NOTICE.md`](NOTICE.md) for upstream attribution.
 
 It implements both DG-LAB protocols, plus a control panel webserver, in a single binary as three independent servers with no shared in-process state:
 
@@ -15,6 +15,21 @@ The default relay ports are intentionally offset **+3** from the reference serve
 The control panel is a real client of both protocols, not a special-cased shortcut: it connects to the V3 and V4 relays over ordinary loopback WebSocket, simultaneously, exactly like any third-party controller would, so pairing/strength/waveform all go through the same code path a real controller uses on whichever protocol the device is actually using.
 
 For a deeper dive — architecture diagrams, full API reference, sequence diagrams, and a usage guide for integrating your own controller — see [`docs/`](docs/README.md).
+
+## Safety and medical disclaimer
+
+**This software is not a medical device and is not intended for any medical, therapeutic, or clinical use.** It is unofficial, community-built control software for a consumer electrical-stimulation ("e-stim") device. It was written independently of DG-LAB / Dungeon Lab and has not been reviewed, certified, or endorsed by them for safety.
+
+This software sends real strength-adjustment and waveform commands to a physical device capable of delivering electrical stimulation to a person's body. A bug in this software (or in a modification you make to it), a problem in the network path between this server and the DG-LAB APP, or a fault in the device itself, could cause stimulation to start, stop, increase, or continue unexpectedly.
+
+- **Do not use this software, or DG-LAB devices in general, if you:** have a cardiac pacemaker, an implanted defibrillator, or any other implanted electronic medical device; have a heart condition or arrhythmia; are pregnant; have epilepsy or a seizure disorder; or have been advised by a medical professional against using electrical stimulation devices.
+- **Never place electrodes/pads on or near the head, neck, throat, chest (across the heart), or spine.**
+- **Never use unattended**, while operating a vehicle or machinery, while impaired, or in any situation where a sudden or unexpected muscle response could cause injury.
+- **Always start at the lowest strength setting** and increase gradually. Stop immediately if you experience pain, burning, skin irritation, or any adverse reaction.
+- This software includes an application-level "upper limit" safety cap (see [Control panel](#control-panel) below), but it is a convenience, not a certified safety mechanism — it depends on the device's own status reports arriving correctly, is not a substitute for supervision and good judgment, and can be bypassed by a bug, a race condition, a modification, or a device/relay failure.
+- Pasted or custom pulse waveform data (see "On the pulse waveform presets" below) is sent to the device largely opaque to this software — using data you haven't verified is safe for you carries the same risk as any unverified electrical stimulation pattern.
+
+**No warranty. Use entirely at your own risk.** As stated in the GPLv3 license this project is distributed under (see [`LICENSE`](LICENSE)), this software is provided "AS IS", WITHOUT WARRANTY OF ANY KIND, express or implied. The authors and contributors of this port accept no liability for any injury, harm, or damage arising from its use. This disclaimer was written for this Rust port specifically — no upstream disclaimer of this kind exists to translate or import; see [`NOTICE.md`](NOTICE.md) for what upstream does provide (a non-commercial-use notice) and full attribution.
 
 ## Requirements
 
@@ -197,3 +212,7 @@ tests/
 ```
 
 Run `cargo doc --no-deps --open` for the full per-module API documentation, including the design notes on why state is one `Mutex` per protocol, how `CancellationToken`s drive idle timers and pulse-sequence replacement, and where this port deliberately diverges from the original TS server's edge-case behavior (each such spot is called out in the source with the reasoning).
+
+## License
+
+Licensed under the GNU General Public License v3.0 — see [`LICENSE`](LICENSE). This matches the license of [`dglab-websocket-server`](https://github.com/dungeonlab-open/dglab-websocket-server) and [`dglab-kit`](https://github.com/dungeonlab-open/dglab-kit), the upstream projects this port is derived from — see [`NOTICE.md`](NOTICE.md) for full attribution and the upstream non-commercial-use notice.

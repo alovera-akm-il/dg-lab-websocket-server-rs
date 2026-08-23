@@ -15,4 +15,6 @@
   design, edge cases, testing plan), not implemented
 
 See the top-level [README](../README.md) for installation, the environment
-variable reference, and quick-start instructions.
+variable reference, and quick-start instructions. See the top-level
+[NOTICE.md](../NOTICE.md) for upstream attribution and
+[LICENSE](../LICENSE) for licensing (GPLv3).
