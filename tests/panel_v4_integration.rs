@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use dg_lab_websocket_server_rs::{panel, v3, v4};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -54,7 +54,11 @@ async fn spawn_v4() -> u16 {
 }
 
 async fn spawn_panel(v3_port: u16, v4_port: u16) -> (String, Arc<panel::state::PanelState>) {
-    let config = Arc::new(panel::config::Config { port: 0, public_ws_base: None, webhook_url: None });
+    let config = Arc::new(panel::config::Config {
+        port: 0,
+        public_ws_base: None,
+        webhook_url: None,
+    });
     let (panel_state, router) = panel::build(config, v3_port, v4_port, "/".to_string());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -145,7 +149,10 @@ async fn panel_drives_a_v4_device_through_the_full_handshake_and_command_set() {
 
     let slot_id = wait_for_slot(&panel_state).await;
     assert_eq!(slot_id, "slot1");
-    assert_eq!(panel_state.snapshot().active_protocol.map(|p| p.as_str()), Some("v4"));
+    assert_eq!(
+        panel_state.snapshot().active_protocol.map(|p| p.as_str()),
+        Some("v4")
+    );
 
     let http = reqwest::Client::new();
 
@@ -156,7 +163,10 @@ async fn panel_drives_a_v4_device_through_the_full_handshake_and_command_set() {
         .send()
         .await
         .unwrap();
-    assert!(res.status().is_success(), "strength inc should succeed once a V4 device is active");
+    assert!(
+        res.status().is_success(),
+        "strength inc should succeed once a V4 device is active"
+    );
 
     // Per the V4 wire protocol, the relay strips the outer `clientId`
     // when forwarding controller -> device (a device only ever has one
@@ -167,7 +177,10 @@ async fn panel_drives_a_v4_device_through_the_full_handshake_and_command_set() {
     })
     .await;
     assert_eq!(frame.get("clientId"), None);
-    assert_eq!(frame["data"]["data"], json!({"s": "slot1", "t": 3, "c": 0, "p": 1, "v": 1}));
+    assert_eq!(
+        frame["data"]["data"],
+        json!({"s": "slot1", "t": 3, "c": 0, "p": 1, "v": 1})
+    );
 
     // Pulse -> AppendPulseData (t:0), duration converted from seconds to ms.
     let res = http
@@ -185,15 +198,23 @@ async fn panel_drives_a_v4_device_through_the_full_handshake_and_command_set() {
     );
 
     // Clear -> device.op.clear.
-    let res = http.post(format!("{panel_base}/api/clear")).json(&json!({"channel": "A"})).send().await.unwrap();
+    let res = http
+        .post(format!("{panel_base}/api/clear"))
+        .json(&json!({"channel": "A"}))
+        .send()
+        .await
+        .unwrap();
     assert!(res.status().is_success());
     let frame = recv_until(&mut app, |v| v["data"]["m"] == "device.op.clear").await;
     assert_eq!(frame["data"]["data"], json!({"s": "slot1", "c": 0}));
 
     // custom.action -> tracked as button feedback.
-    app.send(Message::text(json!({"type": "message", "data": {"t": "ev", "ev": "custom.action", "action": 2}}).to_string()))
-        .await
-        .unwrap();
+    app.send(Message::text(
+        json!({"type": "message", "data": {"t": "ev", "ev": "custom.action", "action": 2}})
+            .to_string(),
+    ))
+    .await
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if panel_state.snapshot().last_button_action == Some(2) {

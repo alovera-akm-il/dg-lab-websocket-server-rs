@@ -26,7 +26,9 @@ pub fn is_loopback_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    host.parse::<IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+    host.parse::<IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
 }
 
 /// Strips a trailing `:port` from an HTTP `Host` header value, handling
@@ -35,7 +37,10 @@ pub fn strip_port(host_header: &str) -> &str {
     if let Some(rest) = host_header.strip_prefix('[') {
         return rest.split(']').next().unwrap_or(rest);
     }
-    host_header.rsplit_once(':').map(|(h, _)| h).unwrap_or(host_header)
+    host_header
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(host_header)
 }
 
 #[cfg(test)]

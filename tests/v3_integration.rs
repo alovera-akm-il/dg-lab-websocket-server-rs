@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use dg_lab_websocket_server_rs::v3;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -66,7 +66,9 @@ async fn pair_strength_and_pulse_happy_path() {
     let web_id = web_bind["clientId"].as_str().unwrap().to_string();
 
     // App side attaches via the URL path tail, auto-pairing with web_id.
-    let (mut app, _) = connect_async(format!("{base}/{web_id}")).await.expect("app connects");
+    let (mut app, _) = connect_async(format!("{base}/{web_id}"))
+        .await
+        .expect("app connects");
     let app_bind = recv_json(&mut app).await;
     let app_id = app_bind["clientId"].as_str().unwrap().to_string();
 
@@ -94,7 +96,10 @@ async fn pair_strength_and_pulse_happy_path() {
     ))
     .await
     .unwrap();
-    let pulse = recv_until(&mut app, |v| v["type"] == "msg" && v["message"] != "strength-1+2+20").await;
+    let pulse = recv_until(&mut app, |v| {
+        v["type"] == "msg" && v["message"] != "strength-1+2+20"
+    })
+    .await;
     assert_eq!(pulse["message"], "pulse-legacywave");
     let done = recv_until(&mut web, |v| v["type"] == "notify").await;
     assert_eq!(done["message"], "发送完毕");
@@ -104,7 +109,9 @@ async fn pair_strength_and_pulse_happy_path() {
 async fn pairing_to_nonexistent_target_closes_with_4001() {
     let base = spawn_server().await;
 
-    let (mut app, _) = connect_async(format!("{base}/does-not-exist")).await.expect("connects");
+    let (mut app, _) = connect_async(format!("{base}/does-not-exist"))
+        .await
+        .expect("connects");
     let error = recv_json(&mut app).await;
     assert_eq!(error["type"], "error");
     assert_eq!(error["message"], "4001");

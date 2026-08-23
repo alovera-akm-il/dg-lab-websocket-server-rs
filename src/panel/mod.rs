@@ -30,12 +30,17 @@ use std::sync::Arc;
 use axum::Router;
 use tokio::net::TcpListener;
 
-use crate::logging::{log_panel, LogLevel};
+use crate::logging::{LogLevel, log_panel};
 
 /// Builds the panel state (spawning its V3 and V4 relay-client tasks) and
 /// router without binding a socket, so integration tests can drive a
 /// fresh instance against ephemeral ports.
-pub fn build(config: Arc<config::Config>, v3_port: u16, v4_port: u16, v4_prefix: String) -> (Arc<state::PanelState>, Router) {
+pub fn build(
+    config: Arc<config::Config>,
+    v3_port: u16,
+    v4_port: u16,
+    v4_prefix: String,
+) -> (Arc<state::PanelState>, Router) {
     let panel = Arc::new(state::PanelState::new());
     if let Some(url) = &config.webhook_url {
         panel.set_webhook_url(Some(url.clone()));
@@ -47,7 +52,9 @@ pub fn build(config: Arc<config::Config>, v3_port: u16, v4_port: u16, v4_prefix:
     match &lan_ip {
         Some(ip) => log_panel(
             LogLevel::Info,
-            format!("detected LAN IP {ip} (used for the pairing QR if the panel is viewed via localhost)"),
+            format!(
+                "detected LAN IP {ip} (used for the pairing QR if the panel is viewed via localhost)"
+            ),
         ),
         None => log_panel(
             LogLevel::Warn,
@@ -71,7 +78,10 @@ pub async fn serve(v3_port: u16, v4_port: u16, v4_prefix: String) -> std::io::Re
     let (_panel, router) = build(config.clone(), v3_port, v4_port, v4_prefix);
 
     let listener = TcpListener::bind(("0.0.0.0", config.port)).await?;
-    log_panel(LogLevel::Info, format!("control panel started on port {}", config.port));
+    log_panel(
+        LogLevel::Info,
+        format!("control panel started on port {}", config.port),
+    );
 
     axum::serve(listener, router).await
 }

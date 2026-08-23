@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::v3::protocol::Channel;
 use crate::v3::pulse::parse_pulse_message;
@@ -69,7 +69,11 @@ pub fn strength_frame(
 }
 
 pub fn clear_frame(device_id: &str, slot_id: &str, channel: Channel) -> Value {
-    envelope(device_id, "device.op.clear", json!({"s": slot_id, "c": v4_channel(channel)}))
+    envelope(
+        device_id,
+        "device.op.clear",
+        json!({"s": slot_id, "c": v4_channel(channel)}),
+    )
 }
 
 /// Builds an `AppendPulseData` (`t:0`) task from the same waveform text
@@ -79,7 +83,13 @@ pub fn clear_frame(device_id: &str, slot_id: &str, channel: Channel) -> Value {
 /// exactly what V4's `ver:3` frame format expects as `v`. Returns `None`
 /// if `waveform` isn't in that shape: V4 has no raw-passthrough fallback
 /// the way V3 does, so there's nothing sensible to send.
-pub fn pulse_frame(device_id: &str, slot_id: &str, channel: Channel, duration_ms: i64, waveform: &str) -> Option<Value> {
+pub fn pulse_frame(
+    device_id: &str,
+    slot_id: &str,
+    channel: Channel,
+    duration_ms: i64,
+    waveform: &str,
+) -> Option<Value> {
     let frames = parse_pulse_message(waveform)?;
     Some(envelope(
         device_id,
@@ -109,10 +119,16 @@ mod tests {
     #[test]
     fn inc_dec_build_add_intensity_with_signed_delta() {
         let inc = strength_frame("d1", "s1", Channel::A, StrengthOp::Inc, None).unwrap();
-        assert_eq!(inner_data(&inc), &json!({"s": "s1", "t": 3, "c": 0, "p": 1, "v": 1}));
+        assert_eq!(
+            inner_data(&inc),
+            &json!({"s": "s1", "t": 3, "c": 0, "p": 1, "v": 1})
+        );
 
         let dec = strength_frame("d1", "s1", Channel::B, StrengthOp::Dec, None).unwrap();
-        assert_eq!(inner_data(&dec), &json!({"s": "s1", "t": 3, "c": 1, "p": 1, "v": -1}));
+        assert_eq!(
+            inner_data(&dec),
+            &json!({"s": "s1", "t": 3, "c": 1, "p": 1, "v": -1})
+        );
     }
 
     #[test]
@@ -138,7 +154,14 @@ mod tests {
 
     #[test]
     fn pulse_frame_extracts_hex_frames_from_the_shared_waveform_format() {
-        let frame = pulse_frame("d1", "s1", Channel::A, 3000, r#"A:["0A0A0A0A0A0A0A0A","0B0B0B0B0B0B0B0B"]"#).unwrap();
+        let frame = pulse_frame(
+            "d1",
+            "s1",
+            Channel::A,
+            3000,
+            r#"A:["0A0A0A0A0A0A0A0A","0B0B0B0B0B0B0B0B"]"#,
+        )
+        .unwrap();
         assert_eq!(
             inner_data(&frame),
             &json!({"s": "s1", "t": 0, "c": 0, "p": 1, "d": 3000, "v": ["0A0A0A0A0A0A0A0A", "0B0B0B0B0B0B0B0B"]})

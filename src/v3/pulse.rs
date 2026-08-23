@@ -202,12 +202,7 @@ mod tests {
     #[test]
     fn build_pulse_sequence_parsed_uses_resolved_channel_letter_not_original_prefix() {
         // Sent with prefix "X", but channel resolves to B -- output must use B.
-        let seq = build_pulse_sequence(
-            r#"X:["0a0a0a0a0a0a0a0a"]"#,
-            Channel::B,
-            1,
-            1,
-        );
+        let seq = build_pulse_sequence(r#"X:["0a0a0a0a0a0a0a0a"]"#, Channel::B, 1, 1);
         assert!(seq.parsed);
         assert_eq!(seq.total_frames, Some(10));
         assert_eq!(seq.packet_count, 1);

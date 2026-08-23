@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::Router;
 use tokio::net::TcpListener;
 
-use crate::logging::{log_v4, LogLevel};
+use crate::logging::{LogLevel, log_v4};
 
 /// Builds the Hub and router without binding or spawning background
 /// tasks, so integration tests can drive a fresh instance against an
@@ -51,7 +51,10 @@ pub async fn serve_with(config: Arc<config::Config>) -> std::io::Result<()> {
     ping::spawn(hub, config.ws_ping_ms, config.max_missed_ws_pongs);
     log_v4(
         LogLevel::Info,
-        format!("service started port={} path={}", config.port, config.prefix),
+        format!(
+            "service started port={} path={}",
+            config.port, config.prefix
+        ),
     );
 
     axum::serve(listener, router).await

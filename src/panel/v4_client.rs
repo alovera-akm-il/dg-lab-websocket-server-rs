@@ -10,11 +10,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::logging::{log_panel, LogLevel};
+use crate::logging::{LogLevel, log_panel};
 
 use super::relay_client::decode_button_feedback;
 use super::state::{PanelState, Protocol};
@@ -52,11 +52,7 @@ pub async fn run(v4_port: u16, prefix: String, state: Arc<PanelState>) {
 /// `prefix` always starts with `/` (see `v4::config::normalize_prefix`);
 /// avoid a doubled slash when it's the bare root.
 fn connect_path(prefix: &str) -> &str {
-    if prefix == "/" {
-        ""
-    } else {
-        prefix
-    }
+    if prefix == "/" { "" } else { prefix }
 }
 
 async fn connect_and_run(
@@ -129,7 +125,10 @@ fn handle_frame(state: &Arc<PanelState>, text: &str, tx: &mpsc::UnboundedSender<
             }
         }
         Some("client_disconnected") => {
-            state.log_with("V4 APP disconnected", json!({"event": "device_disconnected", "protocol": "v4"}));
+            state.log_with(
+                "V4 APP disconnected",
+                json!({"event": "device_disconnected", "protocol": "v4"}),
+            );
             state.v4_clear_device();
         }
         Some("idle_timeout") => {
@@ -139,8 +138,14 @@ fn handle_frame(state: &Arc<PanelState>, text: &str, tx: &mpsc::UnboundedSender<
             );
         }
         Some("error") => {
-            let code = value.get("code").and_then(Value::as_str).unwrap_or("unknown");
-            state.log_with(format!("V4 error: {code}"), json!({"event": "error", "protocol": "v4", "code": code}));
+            let code = value
+                .get("code")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            state.log_with(
+                format!("V4 error: {code}"),
+                json!({"event": "error", "protocol": "v4", "code": code}),
+            );
         }
         Some("message") => handle_app_message(state, &value),
         Some("heartbeat") | Some("pong") => {} // don't spam the visible log
@@ -152,7 +157,9 @@ fn handle_frame(state: &Arc<PanelState>, text: &str, tx: &mpsc::UnboundedSender<
 /// envelope's `data` carries the actual RPC/event payload -- see
 /// `dglab-kit`'s documented V4 schema (`docs/api.md`'s V4 section).
 fn handle_app_message(state: &Arc<PanelState>, envelope: &Value) {
-    let Some(data) = envelope.get("data") else { return };
+    let Some(data) = envelope.get("data") else {
+        return;
+    };
     match data.get("t").and_then(Value::as_str) {
         Some("ev") => handle_app_event(state, data),
         Some("resp") => {
@@ -171,19 +178,29 @@ fn handle_app_message(state: &Arc<PanelState>, envelope: &Value) {
 fn handle_app_event(state: &Arc<PanelState>, data: &Value) {
     match data.get("ev").and_then(Value::as_str) {
         Some("devices.snapshot") => {
-            if let Some(device) = data.get("devices").and_then(Value::as_array).and_then(|d| d.first()) {
+            if let Some(device) = data
+                .get("devices")
+                .and_then(Value::as_array)
+                .and_then(|d| d.first())
+            {
                 apply_device(state, device);
             }
         }
         Some("devices.patch") => {
-            if let Some(device) = data.get("added").and_then(Value::as_array).and_then(|d| d.first()) {
+            if let Some(device) = data
+                .get("added")
+                .and_then(Value::as_array)
+                .and_then(|d| d.first())
+            {
                 apply_device(state, device);
             }
         }
         Some("slots.patch") => {
             if let Some(slots) = data.get("slots").and_then(Value::as_array) {
                 for slot in slots {
-                    let Some(slot_id) = slot.get("slotId").and_then(Value::as_str) else { continue };
+                    let Some(slot_id) = slot.get("slotId").and_then(Value::as_str) else {
+                        continue;
+                    };
                     let (strength_a, strength_b) = extract_intensities(slot.get("props"));
                     state.v4_update_device(slot_id, strength_a, strength_b);
                 }
@@ -204,8 +221,14 @@ fn handle_app_event(state: &Arc<PanelState>, data: &Value) {
 }
 
 fn apply_device(state: &Arc<PanelState>, device: &Value) {
-    let Some(slot_id) = device.get("slotId").and_then(Value::as_str) else { return };
-    let name = device.get("name").and_then(Value::as_str).unwrap_or("device").to_string();
+    let Some(slot_id) = device.get("slotId").and_then(Value::as_str) else {
+        return;
+    };
+    let name = device
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("device")
+        .to_string();
     let (strength_a, strength_b) = extract_intensities(device.get("props"));
     state.log_with(
         format!("V4 device available: {name} ({slot_id})"),
@@ -218,8 +241,12 @@ fn apply_device(state: &Arc<PanelState>, device: &Value) {
 /// `props` field names under V4 (`docs/api.md`), distinct from V3's
 /// `strength-<a>+<b>+...` naming for the same concept.
 fn extract_intensities(props: Option<&Value>) -> (Option<i64>, Option<i64>) {
-    let a = props.and_then(|p| p.get("intensityA")).and_then(Value::as_i64);
-    let b = props.and_then(|p| p.get("intensityB")).and_then(Value::as_i64);
+    let a = props
+        .and_then(|p| p.get("intensityA"))
+        .and_then(Value::as_i64);
+    let b = props
+        .and_then(|p| p.get("intensityB"))
+        .and_then(Value::as_i64);
     (a, b)
 }
 
@@ -245,7 +272,11 @@ mod tests {
     async fn hello_sets_connected_state() {
         let state = Arc::new(PanelState::new());
         let (tx, _rx) = mpsc::unbounded_channel();
-        handle_frame(&state, &json!({"type": "hello", "clientId": "c1"}).to_string(), &tx);
+        handle_frame(
+            &state,
+            &json!({"type": "hello", "clientId": "c1"}).to_string(),
+            &tx,
+        );
         let snap = state.snapshot();
         assert_eq!(snap.v4_controller_id.as_deref(), Some("c1"));
     }
@@ -254,8 +285,16 @@ mod tests {
     async fn devices_snapshot_populates_tracked_device_and_activates() {
         let state = Arc::new(PanelState::new());
         let (tx, _rx) = mpsc::unbounded_channel();
-        handle_frame(&state, &json!({"type": "hello", "clientId": "c1"}).to_string(), &tx);
-        handle_frame(&state, &json!({"type": "client_attached", "clientId": "app1"}).to_string(), &tx);
+        handle_frame(
+            &state,
+            &json!({"type": "hello", "clientId": "c1"}).to_string(),
+            &tx,
+        );
+        handle_frame(
+            &state,
+            &json!({"type": "client_attached", "clientId": "app1"}).to_string(),
+            &tx,
+        );
         let msg = json!({
             "type": "message",
             "clientId": "app1",
@@ -269,15 +308,26 @@ mod tests {
         assert_eq!(snap.v4_device_slot_id.as_deref(), Some("slot1"));
         assert_eq!(snap.strength_a, Some(5));
         assert_eq!(snap.strength_b, Some(6));
-        assert!(matches!(state.active_target(), Some(super::super::state::ActiveTarget::V4 { .. })));
+        assert!(matches!(
+            state.active_target(),
+            Some(super::super::state::ActiveTarget::V4 { .. })
+        ));
     }
 
     #[tokio::test]
     async fn custom_action_records_button_feedback_when_active() {
         let state = Arc::new(PanelState::new());
         let (tx, _rx) = mpsc::unbounded_channel();
-        handle_frame(&state, &json!({"type": "hello", "clientId": "c1"}).to_string(), &tx);
-        handle_frame(&state, &json!({"type": "client_attached", "clientId": "app1"}).to_string(), &tx);
+        handle_frame(
+            &state,
+            &json!({"type": "hello", "clientId": "c1"}).to_string(),
+            &tx,
+        );
+        handle_frame(
+            &state,
+            &json!({"type": "client_attached", "clientId": "app1"}).to_string(),
+            &tx,
+        );
         let snapshot_msg = json!({
             "type": "message", "clientId": "app1",
             "data": {"t": "ev", "ev": "devices.snapshot", "devices": [{"slotId": "slot1", "name": "Coyote"}]},
@@ -296,9 +346,21 @@ mod tests {
     async fn client_disconnected_clears_the_device() {
         let state = Arc::new(PanelState::new());
         let (tx, _rx) = mpsc::unbounded_channel();
-        handle_frame(&state, &json!({"type": "hello", "clientId": "c1"}).to_string(), &tx);
-        handle_frame(&state, &json!({"type": "client_attached", "clientId": "app1"}).to_string(), &tx);
-        handle_frame(&state, &json!({"type": "client_disconnected", "clientId": "app1"}).to_string(), &tx);
+        handle_frame(
+            &state,
+            &json!({"type": "hello", "clientId": "c1"}).to_string(),
+            &tx,
+        );
+        handle_frame(
+            &state,
+            &json!({"type": "client_attached", "clientId": "app1"}).to_string(),
+            &tx,
+        );
+        handle_frame(
+            &state,
+            &json!({"type": "client_disconnected", "clientId": "app1"}).to_string(),
+            &tx,
+        );
 
         let snap = state.snapshot();
         assert_eq!(snap.v4_device_id, None);

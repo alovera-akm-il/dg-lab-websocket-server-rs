@@ -215,9 +215,8 @@ mod tests {
 
     #[test]
     fn parse_frame_accepts_numeric_type() {
-        let frame =
-            parse_frame(r#"{"type":3,"clientId":"a","targetId":"b","message":"strength"}"#)
-                .unwrap();
+        let frame = parse_frame(r#"{"type":3,"clientId":"a","targetId":"b","message":"strength"}"#)
+            .unwrap();
         assert_eq!(frame.type_, json!(3));
         assert_eq!(frame.client_id, "a");
     }
@@ -232,8 +231,8 @@ mod tests {
 
     #[test]
     fn validate_source_accepts_either_id() {
-        let frame = parse_frame(r#"{"type":"x","clientId":"a","targetId":"b","message":""}"#)
-            .unwrap();
+        let frame =
+            parse_frame(r#"{"type":"x","clientId":"a","targetId":"b","message":""}"#).unwrap();
         assert!(validate_source(&frame, "a"));
         assert!(validate_source(&frame, "b"));
         assert!(!validate_source(&frame, "c"));
@@ -278,10 +277,7 @@ mod tests {
         // A *present* bad value is rejected outright, even with a fallback
         // available -- fallback only applies when the field is absent.
         assert_eq!(normalize_channel(Some(&json!(5)), Some(Channel::A)), None);
-        assert_eq!(
-            normalize_channel(Some(&json!("C")), Some(Channel::A)),
-            None
-        );
+        assert_eq!(normalize_channel(Some(&json!("C")), Some(Channel::A)), None);
     }
 
     #[test]

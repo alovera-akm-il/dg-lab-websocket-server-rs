@@ -14,7 +14,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::logging::{log_v4, LogLevel};
+use crate::logging::{LogLevel, log_v4};
 
 use super::handler::CLOSE_IDLE_TIMEOUT;
 use super::state::Hub;

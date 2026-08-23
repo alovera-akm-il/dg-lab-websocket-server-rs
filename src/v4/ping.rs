@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use axum::extract::ws::Message;
 
-use crate::logging::{log_v4, LogLevel};
+use crate::logging::{LogLevel, log_v4};
 
 use super::state::{Hub, PingAction};
 
@@ -27,7 +27,9 @@ pub fn spawn(hub: Arc<Hub>, interval_ms: u64, max_missed_pongs: u32) {
                     PingAction::Terminate => {
                         log_v4(
                             LogLevel::Warn,
-                            format!("WS liveness check timed out connection={client_id} missed_pongs={max_missed_pongs}"),
+                            format!(
+                                "WS liveness check timed out connection={client_id} missed_pongs={max_missed_pongs}"
+                            ),
                         );
                         shutdown_token.cancel();
                     }

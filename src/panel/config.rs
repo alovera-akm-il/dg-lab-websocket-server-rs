@@ -28,5 +28,8 @@ impl Config {
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
-    std::env::var(name).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }

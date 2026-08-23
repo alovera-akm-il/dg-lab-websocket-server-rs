@@ -1,9 +1,9 @@
 //! Builds the pairing QR: the V3/V4 WebSocket URL, wrapped in the
 //! DG-LAB APP's deep link for that protocol, rendered as an inline SVG.
 
-use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
-use qrcode::render::svg;
+use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use qrcode::QrCode;
+use qrcode::render::svg;
 
 pub fn ws_url(scheme: &str, host: &str, v3_port: u16, controller_id: &str) -> String {
     format!("{scheme}://{host}:{v3_port}/{controller_id}")
@@ -13,7 +13,13 @@ pub fn ws_url(scheme: &str, host: &str, v3_port: u16, controller_id: &str) -> St
 /// prefix (`ws://host:port<prefix>/?tid=<controllerId>`), per dglab-kit's
 /// "生成 APP 配对二维码" section -- unlike V3, there's no path-tail form.
 /// `prefix` always starts with `/` (see `v4::config::normalize_prefix`).
-pub fn v4_ws_url(scheme: &str, host: &str, v4_port: u16, prefix: &str, controller_id: &str) -> String {
+pub fn v4_ws_url(
+    scheme: &str,
+    host: &str,
+    v4_port: u16,
+    prefix: &str,
+    controller_id: &str,
+) -> String {
     let path = if prefix == "/" { "" } else { prefix };
     format!("{scheme}://{host}:{v4_port}{path}/?tid={controller_id}")
 }
@@ -83,8 +89,14 @@ mod tests {
 
     #[test]
     fn v4_ws_url_uses_query_tid_form_and_avoids_double_slash_at_root() {
-        assert_eq!(v4_ws_url("ws", "127.0.0.1", 10001, "/", "abc-123"), "ws://127.0.0.1:10001/?tid=abc-123");
-        assert_eq!(v4_ws_url("ws", "127.0.0.1", 10001, "/v4", "abc-123"), "ws://127.0.0.1:10001/v4/?tid=abc-123");
+        assert_eq!(
+            v4_ws_url("ws", "127.0.0.1", 10001, "/", "abc-123"),
+            "ws://127.0.0.1:10001/?tid=abc-123"
+        );
+        assert_eq!(
+            v4_ws_url("ws", "127.0.0.1", 10001, "/v4", "abc-123"),
+            "ws://127.0.0.1:10001/v4/?tid=abc-123"
+        );
     }
 
     #[test]

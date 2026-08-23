@@ -41,12 +41,20 @@ pub fn init() {
     let max_total = crate::env::u64_from_env("LOG_MAX_TOTAL_BYTES", DEFAULT_LOG_MAX_TOTAL_BYTES);
     let max_file_bytes = (max_total / (LOG_BACKUP_COUNT as u64 + 1)).max(1);
 
-    let file_spec = FileSpec::default().directory(&dir).basename("server").suppress_timestamp().suffix("log");
+    let file_spec = FileSpec::default()
+        .directory(&dir)
+        .basename("server")
+        .suppress_timestamp()
+        .suffix("log");
 
     let result = Logger::try_with_str("info")
         .expect("static log spec \"info\" always parses")
         .log_to_file(file_spec)
-        .rotate(Criterion::Size(max_file_bytes), Naming::Numbers, Cleanup::KeepLogFiles(LOG_BACKUP_COUNT))
+        .rotate(
+            Criterion::Size(max_file_bytes),
+            Naming::Numbers,
+            Cleanup::KeepLogFiles(LOG_BACKUP_COUNT),
+        )
         .duplicate_to_stdout(Duplicate::All)
         .format(raw_format)
         .start();
@@ -65,7 +73,11 @@ pub fn init() {
 /// `flexi_logger` itself, since every line we emit is already fully
 /// formatted. `flexi_logger` appends the line ending after calling this,
 /// so it must not add its own trailing newline.
-fn raw_format(w: &mut dyn std::io::Write, _now: &mut DeferredNow, record: &Record) -> std::io::Result<()> {
+fn raw_format(
+    w: &mut dyn std::io::Write,
+    _now: &mut DeferredNow,
+    record: &Record,
+) -> std::io::Result<()> {
     write!(w, "{}", record.args())
 }
 

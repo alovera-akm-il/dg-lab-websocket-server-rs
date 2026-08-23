@@ -11,11 +11,11 @@ use axum::routing::post;
 use axum::{Json, Router};
 use dg_lab_websocket_server_rs::{panel, v3, v4};
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -55,7 +55,11 @@ async fn spawn_v4() -> u16 {
 }
 
 async fn spawn_panel(v3_port: u16, v4_port: u16) -> (String, Arc<panel::state::PanelState>) {
-    let config = Arc::new(panel::config::Config { port: 0, public_ws_base: None, webhook_url: None });
+    let config = Arc::new(panel::config::Config {
+        port: 0,
+        public_ws_base: None,
+        webhook_url: None,
+    });
     let (panel_state, router) = panel::build(config, v3_port, v4_port, "/".to_string());
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -158,13 +162,24 @@ async fn webhook_fires_with_structured_payloads_for_pairing_and_button_feedback(
     let (mut device, _) = connect_async(format!("ws://127.0.0.1:{v3_port}/{controller_id}"))
         .await
         .expect("device connects");
-    let self_bind = recv_until(&mut device, |v| v["type"] == "bind" && v["message"] == "targetId").await;
+    let self_bind = recv_until(&mut device, |v| {
+        v["type"] == "bind" && v["message"] == "targetId"
+    })
+    .await;
     let device_id = self_bind["clientId"].as_str().unwrap().to_string();
-    recv_until(&mut device, |v| v["type"] == "bind" && v["message"] == "200").await;
+    recv_until(&mut device, |v| {
+        v["type"] == "bind" && v["message"] == "200"
+    })
+    .await;
 
     let paired_payload = recv_webhook_event(&mut hook_rx, "paired").await;
     assert_eq!(paired_payload["deviceId"], device_id);
-    assert!(paired_payload["message"].as_str().unwrap().contains(&device_id));
+    assert!(
+        paired_payload["message"]
+            .as_str()
+            .unwrap()
+            .contains(&device_id)
+    );
 
     // Simulate a shape-button press report from the device (per
     // dglab-kit's format, forwarded verbatim by V3's app-report path).
@@ -196,5 +211,10 @@ async fn webhook_fires_with_structured_payloads_for_pairing_and_button_feedback(
     // Disconnecting the device should fire a device_disconnected event.
     drop(device);
     let disconnect_payload = recv_webhook_event(&mut hook_rx, "device_disconnected").await;
-    assert!(disconnect_payload["message"].as_str().unwrap().contains("disconnected"));
+    assert!(
+        disconnect_payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("disconnected")
+    );
 }

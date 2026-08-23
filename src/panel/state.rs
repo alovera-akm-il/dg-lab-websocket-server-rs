@@ -383,7 +383,11 @@ impl PanelState {
 
     /// Our own `hello` frame arrived -- we now have a controller id and a
     /// live outbound sender.
-    pub fn v4_set_connected(&self, controller_id: String, outbound: mpsc::UnboundedSender<WsMessage>) {
+    pub fn v4_set_connected(
+        &self,
+        controller_id: String,
+        outbound: mpsc::UnboundedSender<WsMessage>,
+    ) {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.v4_controller_id = Some(controller_id);
@@ -406,7 +410,13 @@ impl PanelState {
     /// The attached APP reported a device we can control (from
     /// `devices.snapshot`/`devices.patch.added`) -- the panel only ever
     /// tracks the first device it sees per APP.
-    pub fn v4_set_device(&self, slot_id: String, name: String, strength_a: Option<i64>, strength_b: Option<i64>) {
+    pub fn v4_set_device(
+        &self,
+        slot_id: String,
+        name: String,
+        strength_a: Option<i64>,
+        strength_b: Option<i64>,
+    ) {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.v4_device_slot_id = Some(slot_id);
@@ -427,10 +437,17 @@ impl PanelState {
 
     /// The tracked device's props changed (`slots.patch`) -- only applied
     /// if V4 is the active leg and the patch is for the device we track.
-    pub fn v4_update_device(&self, slot_id: &str, strength_a: Option<i64>, strength_b: Option<i64>) {
+    pub fn v4_update_device(
+        &self,
+        slot_id: &str,
+        strength_a: Option<i64>,
+        strength_b: Option<i64>,
+    ) {
         {
             let mut inner = self.inner.lock().unwrap();
-            if inner.active_protocol == Some(Protocol::V4) && inner.v4_device_slot_id.as_deref() == Some(slot_id) {
+            if inner.active_protocol == Some(Protocol::V4)
+                && inner.v4_device_slot_id.as_deref() == Some(slot_id)
+            {
                 if let Some(a) = strength_a {
                     inner.strength_a = Some(a);
                 }
@@ -507,7 +524,13 @@ impl PanelState {
     /// V3 device's status report (`strength-<a>+<b>+<softLimitA>+<softLimitB>`).
     /// Ignored if V3 isn't currently the active leg (see
     /// [`Self::set_button_action`]'s doc for why).
-    pub fn set_device_strength(&self, strength_a: i64, strength_b: i64, soft_limit_a: i64, soft_limit_b: i64) {
+    pub fn set_device_strength(
+        &self,
+        strength_a: i64,
+        strength_b: i64,
+        soft_limit_a: i64,
+        soft_limit_b: i64,
+    ) {
         {
             let mut inner = self.inner.lock().unwrap();
             if inner.active_protocol == Some(Protocol::V3) {
@@ -568,8 +591,14 @@ impl PanelState {
 /// device, without the caller needing to know which leg's ids to reach
 /// for.
 pub enum ActiveTarget {
-    V3 { controller_id: String, device_id: String },
-    V4 { device_id: String, slot_id: String },
+    V3 {
+        controller_id: String,
+        device_id: String,
+    },
+    V4 {
+        device_id: String,
+        slot_id: String,
+    },
 }
 
 /// Makes `protocol` the active leg, always overriding whatever was active
@@ -678,7 +707,10 @@ mod tests {
         let snapshot = state.snapshot();
         assert_eq!(snapshot.log.len(), LOG_CAPACITY);
         assert_eq!(snapshot.log.first().unwrap(), "line-10");
-        assert_eq!(snapshot.log.last().unwrap(), &format!("line-{}", LOG_CAPACITY + 9));
+        assert_eq!(
+            snapshot.log.last().unwrap(),
+            &format!("line-{}", LOG_CAPACITY + 9)
+        );
     }
 
     #[test]
@@ -807,7 +839,10 @@ mod tests {
         assert_eq!(snap.active_protocol, Some(Protocol::V4));
         assert_eq!(snap.strength_a, Some(10));
         assert_eq!(snap.strength_b, Some(20));
-        assert!(matches!(state.active_target(), Some(ActiveTarget::V4 { .. })));
+        assert!(matches!(
+            state.active_target(),
+            Some(ActiveTarget::V4 { .. })
+        ));
     }
 
     #[test]

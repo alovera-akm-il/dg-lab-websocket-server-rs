@@ -13,10 +13,10 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use futures_util::stream::{self, Stream};
 use futures_util::StreamExt;
+use futures_util::stream::{self, Stream};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
@@ -104,20 +104,35 @@ fn resolve_ws_base(state: &AppState, headers: &HeaderMap) -> (String, String) {
 fn build_v3_qr(scheme: &str, host: &str, v3_port: u16, controller_id: &str) -> (String, String) {
     let url = qrcode::ws_url(scheme, host, v3_port, controller_id);
     let link = qrcode::pairing_deep_link(&url);
-    let svg = qrcode::render_svg(&link).unwrap_or_else(|_| "<p>QR generation failed</p>".to_string());
+    let svg =
+        qrcode::render_svg(&link).unwrap_or_else(|_| "<p>QR generation failed</p>".to_string());
     (svg, link)
 }
 
 /// Same as [`build_v3_qr`] but for V4's `?tid=` pairing form.
-fn build_v4_qr(scheme: &str, host: &str, v4_port: u16, v4_prefix: &str, controller_id: &str) -> (String, String) {
+fn build_v4_qr(
+    scheme: &str,
+    host: &str,
+    v4_port: u16,
+    v4_prefix: &str,
+    controller_id: &str,
+) -> (String, String) {
     let url = qrcode::v4_ws_url(scheme, host, v4_port, v4_prefix, controller_id);
     let link = qrcode::v4_pairing_deep_link(&url);
-    let svg = qrcode::render_svg(&link).unwrap_or_else(|_| "<p>QR generation failed</p>".to_string());
+    let svg =
+        qrcode::render_svg(&link).unwrap_or_else(|_| "<p>QR generation failed</p>".to_string());
     (svg, link)
 }
 
 #[allow(clippy::too_many_arguments)]
-fn snapshot_json(snapshot: &Snapshot, scheme: &str, host: &str, v3_port: u16, v4_port: u16, v4_prefix: &str) -> Value {
+fn snapshot_json(
+    snapshot: &Snapshot,
+    scheme: &str,
+    host: &str,
+    v3_port: u16,
+    v4_port: u16,
+    v4_prefix: &str,
+) -> Value {
     let (qr_svg, pair_url) = match &snapshot.controller_id {
         Some(id) => {
             let (svg, link) = build_v3_qr(scheme, host, v3_port, id);
@@ -175,7 +190,14 @@ async fn sse_handler(
         let host = host.clone();
         move || {
             Event::default()
-                .json_data(snapshot_json(&panel.snapshot(), &scheme, &host, v3_port, v4_port, &v4_prefix))
+                .json_data(snapshot_json(
+                    &panel.snapshot(),
+                    &scheme,
+                    &host,
+                    v3_port,
+                    v4_port,
+                    &v4_prefix,
+                ))
                 .expect("snapshot JSON is always serializable")
         }
     };
@@ -219,12 +241,19 @@ async fn get_presets() -> Json<Value> {
 /// without holding a live connection open). Uses the same per-request
 /// `Host`-header resolution as the page's own embedded QRs, so it reflects
 /// whatever address this request came in on.
-async fn get_qr(State(state): State<AppState>, Path(protocol): Path<String>, headers: HeaderMap) -> Response {
+async fn get_qr(
+    State(state): State<AppState>,
+    Path(protocol): Path<String>,
+    headers: HeaderMap,
+) -> Response {
     let (scheme, host) = resolve_ws_base(&state, &headers);
     let snapshot = state.panel.snapshot();
 
     let built = match protocol.as_str() {
-        "v3" => snapshot.controller_id.as_deref().map(|id| build_v3_qr(&scheme, &host, state.v3_port, id)),
+        "v3" => snapshot
+            .controller_id
+            .as_deref()
+            .map(|id| build_v3_qr(&scheme, &host, state.v3_port, id)),
         "v4" => snapshot
             .v4_controller_id
             .as_deref()
@@ -233,7 +262,9 @@ async fn get_qr(State(state): State<AppState>, Path(protocol): Path<String>, hea
     };
 
     match built {
-        Some((qr_svg, pair_url)) => Json(json!({"qrSvg": qr_svg, "pairUrl": pair_url})).into_response(),
+        Some((qr_svg, pair_url)) => {
+            Json(json!({"qrSvg": qr_svg, "pairUrl": pair_url})).into_response()
+        }
         None => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             "controller id not known yet -- that protocol's relay connection isn't established",
@@ -288,7 +319,10 @@ async fn post_strength(State(state): State<AppState>, Json(body): Json<StrengthB
         Err((status, message)) => return error_response(status, message),
     };
     let frame = match &target {
-        ActiveTarget::V3 { controller_id, device_id } => commands::strength_frame(controller_id, device_id, channel, op),
+        ActiveTarget::V3 {
+            controller_id,
+            device_id,
+        } => commands::strength_frame(controller_id, device_id, channel, op),
         ActiveTarget::V4 { device_id, slot_id } => {
             match v4_commands::strength_frame(device_id, slot_id, channel, op, current) {
                 Some(frame) => frame,
@@ -328,7 +362,9 @@ async fn post_limit(State(state): State<AppState>, Json(body): Json<LimitBody>) 
     }
 
     state.panel.set_limit(channel, body.value);
-    let description = body.value.map_or_else(|| "cleared".to_string(), |v| v.to_string());
+    let description = body
+        .value
+        .map_or_else(|| "cleared".to_string(), |v| v.to_string());
     state.panel.log(format!(
         "Upper limit for channel {} set to {description}",
         commands::channel_str(channel)
@@ -342,11 +378,17 @@ struct WebhookBody {
 }
 
 async fn post_webhook(State(state): State<AppState>, Json(body): Json<WebhookBody>) -> Response {
-    let url = body.url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+    let url = body
+        .url
+        .map(|u| u.trim().to_string())
+        .filter(|u| !u.is_empty());
     if let Some(url) = &url
         && !webhook::is_plausible_url(url)
     {
-        return error_response(StatusCode::BAD_REQUEST, "url must start with http:// or https://");
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "url must start with http:// or https://",
+        );
     }
 
     let description = url.clone().unwrap_or_else(|| "cleared".to_string());
@@ -369,8 +411,13 @@ async fn post_clear(State(state): State<AppState>, Json(body): Json<ClearBody>) 
         Err((status, message)) => return error_response(status, message),
     };
     let frame = match &target {
-        ActiveTarget::V3 { controller_id, device_id } => commands::clear_frame(controller_id, device_id, channel),
-        ActiveTarget::V4 { device_id, slot_id } => v4_commands::clear_frame(device_id, slot_id, channel),
+        ActiveTarget::V3 {
+            controller_id,
+            device_id,
+        } => commands::clear_frame(controller_id, device_id, channel),
+        ActiveTarget::V4 { device_id, slot_id } => {
+            v4_commands::clear_frame(device_id, slot_id, channel)
+        }
     };
     send_frame(&state, &tx, frame)
 }
@@ -400,7 +447,10 @@ async fn post_pulse(State(state): State<AppState>, Json(body): Json<PulseBody>) 
         Err((status, message)) => return error_response(status, message),
     };
     let frame = match &target {
-        ActiveTarget::V3 { controller_id, device_id } => commands::pulse_frame(controller_id, device_id, channel, time, &waveform),
+        ActiveTarget::V3 {
+            controller_id,
+            device_id,
+        } => commands::pulse_frame(controller_id, device_id, channel, time, &waveform),
         ActiveTarget::V4 { device_id, slot_id } => {
             match v4_commands::pulse_frame(device_id, slot_id, channel, time * 1000, &waveform) {
                 Some(frame) => frame,
@@ -419,7 +469,9 @@ async fn post_pulse(State(state): State<AppState>, Json(body): Json<PulseBody>) 
 async fn post_reconnect(State(state): State<AppState>) -> Response {
     state.panel.request_reconnect();
     state.panel.v4_request_reconnect();
-    state.panel.log("Manual reconnect requested (both protocols)");
+    state
+        .panel
+        .log("Manual reconnect requested (both protocols)");
     StatusCode::OK.into_response()
 }
 
@@ -441,7 +493,10 @@ fn active_target_and_outbound(
     };
     match tx {
         Some(tx) => Ok((target, tx)),
-        None => Err((StatusCode::SERVICE_UNAVAILABLE, "relay connection not ready")),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "relay connection not ready",
+        )),
     }
 }
 

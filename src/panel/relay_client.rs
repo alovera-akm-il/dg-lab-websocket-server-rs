@@ -8,11 +8,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::logging::{log_panel, LogLevel};
+use crate::logging::{LogLevel, log_panel};
 
 use super::state::{PanelState, Protocol};
 
@@ -123,55 +123,60 @@ fn handle_frame(state: &Arc<PanelState>, text: &str, tx: &mpsc::UnboundedSender<
             );
         }
         Some("break") => {
-            state.log_with("Device disconnected", json!({"event": "device_disconnected", "protocol": "v3"}));
+            state.log_with(
+                "Device disconnected",
+                json!({"event": "device_disconnected", "protocol": "v3"}),
+            );
             state.clear_device();
         }
         Some("notify") => {
             state.log(format!("Notify: {}", translate_notify(message)));
         }
         Some("error") => {
-            state.log_with(format!("Error: {message}"), json!({"event": "error", "protocol": "v3", "code": message}));
+            state.log_with(
+                format!("Error: {message}"),
+                json!({"event": "error", "protocol": "v3", "code": message}),
+            );
         }
-        Some("msg") if message.starts_with("feedback") => {
-            match parse_action_message(message) {
-                Some(action) => {
-                    let (channel, shape) = decode_button_feedback(action);
-                    state.log_with(
+        Some("msg") if message.starts_with("feedback") => match parse_action_message(message) {
+            Some(action) => {
+                let (channel, shape) = decode_button_feedback(action);
+                state.log_with(
                         format!("Button feedback: action {action}"),
                         json!({"event": "button_feedback", "protocol": "v3", "code": action, "channel": channel, "shape": shape}),
                     );
-                    state.set_button_action(Protocol::V3, action);
-                }
-                None => state.log(format!("Feedback: {message}")),
+                state.set_button_action(Protocol::V3, action);
             }
-        }
-        Some("msg") if message.starts_with("strength") => {
-            match parse_device_message(message) {
-                Some(report) => {
-                    state.log_with(
-                        format!(
-                            "Status: A={} (limit {}) B={} (limit {})",
-                            report.strength_a, report.soft_limit_a, report.strength_b, report.soft_limit_b
-                        ),
-                        json!({
-                            "event": "device_status",
-                            "protocol": "v3",
-                            "strengthA": report.strength_a,
-                            "strengthB": report.strength_b,
-                            "softLimitA": report.soft_limit_a,
-                            "softLimitB": report.soft_limit_b,
-                        }),
-                    );
-                    state.set_device_strength(
+            None => state.log(format!("Feedback: {message}")),
+        },
+        Some("msg") if message.starts_with("strength") => match parse_device_message(message) {
+            Some(report) => {
+                state.log_with(
+                    format!(
+                        "Status: A={} (limit {}) B={} (limit {})",
                         report.strength_a,
-                        report.strength_b,
                         report.soft_limit_a,
-                        report.soft_limit_b,
-                    );
-                }
-                None => state.log(format!("Feedback: {message}")),
+                        report.strength_b,
+                        report.soft_limit_b
+                    ),
+                    json!({
+                        "event": "device_status",
+                        "protocol": "v3",
+                        "strengthA": report.strength_a,
+                        "strengthB": report.strength_b,
+                        "softLimitA": report.soft_limit_a,
+                        "softLimitB": report.soft_limit_b,
+                    }),
+                );
+                state.set_device_strength(
+                    report.strength_a,
+                    report.strength_b,
+                    report.soft_limit_a,
+                    report.soft_limit_b,
+                );
             }
-        }
+            None => state.log(format!("Feedback: {message}")),
+        },
         Some("heartbeat") => {} // don't spam the visible log
         _ => {}
     }
@@ -215,7 +220,9 @@ fn translate_notify(message: &str) -> String {
     if let Some(rest) = message.strip_prefix("当前通道")
         && let Some(channel) = rest.strip_suffix("有正在发送的消息，覆盖之前的消息")
     {
-        return format!("Channel {channel} already has a waveform in flight -- replacing it with the new one");
+        return format!(
+            "Channel {channel} already has a waveform in flight -- replacing it with the new one"
+        );
     }
     message.to_string()
 }

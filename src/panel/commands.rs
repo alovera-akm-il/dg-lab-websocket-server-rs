@@ -2,9 +2,9 @@
 //! reuses [`crate::v3::protocol`]'s channel normalization directly so
 //! the panel accepts the same channel spellings the relay itself does.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::v3::protocol::{normalize_channel, Channel};
+use crate::v3::protocol::{Channel, normalize_channel};
 
 pub fn parse_channel(raw: &str) -> Option<Channel> {
     normalize_channel(Some(&Value::String(raw.to_string())), None)
@@ -28,7 +28,12 @@ pub enum StrengthOp {
 /// own `addStrength`/`reduceStrength`/`setStrength` convention -- the V3
 /// server ignores this field's content for numeric-type routing, so this
 /// is purely for wire-level fidelity with a real controller.
-pub fn strength_frame(controller_id: &str, device_id: &str, channel: Channel, op: StrengthOp) -> Value {
+pub fn strength_frame(
+    controller_id: &str,
+    device_id: &str,
+    channel: Channel,
+    op: StrengthOp,
+) -> Value {
     match op {
         StrengthOp::Inc => json!({
             "type": 1, "clientId": controller_id, "targetId": device_id,
@@ -52,7 +57,13 @@ pub fn clear_frame(controller_id: &str, device_id: &str, channel: Channel) -> Va
     })
 }
 
-pub fn pulse_frame(controller_id: &str, device_id: &str, channel: Channel, time: i64, waveform: &str) -> Value {
+pub fn pulse_frame(
+    controller_id: &str,
+    device_id: &str,
+    channel: Channel,
+    time: i64,
+    waveform: &str,
+) -> Value {
     json!({
         "type": "clientMsg", "clientId": controller_id, "targetId": device_id,
         "channel": channel_str(channel), "time": time, "message": waveform,

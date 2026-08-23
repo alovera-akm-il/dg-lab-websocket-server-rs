@@ -5,20 +5,20 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::{StatusCode, Uri};
 use axum::response::Response;
-use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::logging::{log_v3, LogLevel};
+use crate::logging::{LogLevel, log_v3};
 
-use super::config::{Config, CLOSE_INVALID_TARGET_ID, PULSE_REPLACE_DELAY_MS};
+use super::config::{CLOSE_INVALID_TARGET_ID, Config, PULSE_REPLACE_DELAY_MS};
 use super::protocol::{self, Channel, Frame};
 use super::pulse;
 use super::state::Hub;
@@ -103,15 +103,15 @@ async fn handle_socket(socket: WebSocket, state: AppState, target_id: Option<Str
         }
     });
 
-    log_v3(
-        LogLevel::Debug,
-        target_id.clone().unwrap_or_default(),
-    );
+    log_v3(LogLevel::Debug, target_id.clone().unwrap_or_default());
 
     if let Some(tid) = &target_id
         && !state.hub.is_available_target(tid)
     {
-        log_v3(LogLevel::Warn, format!("rejected connection: invalid targetId={tid}"));
+        log_v3(
+            LogLevel::Warn,
+            format!("rejected connection: invalid targetId={tid}"),
+        );
         close_invalid_target(&tx, "", tid);
         drop(tx);
         let _ = writer_task.await;
@@ -150,12 +150,16 @@ async fn handle_socket(socket: WebSocket, state: AppState, target_id: Option<Str
             return;
         }
 
-        let bind_msg = json!({"type":"bind","clientId":tid,"targetId":client_id,"message":result.code});
+        let bind_msg =
+            json!({"type":"bind","clientId":tid,"targetId":client_id,"message":result.code});
         send_to_client(&state.hub, &tid, bind_msg.clone());
         send_frame(&tx, bind_msg);
     }
 
-    log_v3(LogLevel::Info, format!("new WebSocket connection: {client_id}"));
+    log_v3(
+        LogLevel::Info,
+        format!("new WebSocket connection: {client_id}"),
+    );
 
     loop {
         tokio::select! {
@@ -222,7 +226,10 @@ fn on_close(state: &AppState, client_id: &str) {
             .web_id
             .clone()
             .unwrap_or_else(|| outcome.paired_id.clone().unwrap());
-        let break_target_id = outcome.app_id.clone().unwrap_or_else(|| client_id.to_string());
+        let break_target_id = outcome
+            .app_id
+            .clone()
+            .unwrap_or_else(|| client_id.to_string());
         send_frame(
             &partner_tx,
             json!({"type":"break","clientId":break_client_id,"targetId":break_target_id,"message":"209"}),
@@ -236,19 +243,28 @@ fn on_close(state: &AppState, client_id: &str) {
 
     log_v3(
         LogLevel::Info,
-        format!("[disconnect] {client_id}, paired with: {}", outcome.paired_id.unwrap()),
+        format!(
+            "[disconnect] {client_id}, paired with: {}",
+            outcome.paired_id.unwrap()
+        ),
     );
 }
 
 // ---- message routing ------------------------------------------------
 
 fn on_message(state: &AppState, client_id: &str, text: &str) {
-    log_v3(LogLevel::Debug, format!("received message [{client_id}]: {text}"));
+    log_v3(
+        LogLevel::Debug,
+        format!("received message [{client_id}]: {text}"),
+    );
 
     let frame = match protocol::parse_frame(text) {
         Ok(f) => f,
         Err(code) => {
-            log_v3(LogLevel::Warn, format!("malformed message [{client_id}]: code={code}"));
+            log_v3(
+                LogLevel::Warn,
+                format!("malformed message [{client_id}]: code={code}"),
+            );
             send_error(&state.hub, client_id, "", "", code);
             return;
         }
@@ -262,7 +278,13 @@ fn on_message(state: &AppState, client_id: &str, text: &str) {
                 frame.client_id, frame.target_id
             ),
         );
-        send_error(&state.hub, client_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            client_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
         return;
     }
 
@@ -307,13 +329,15 @@ fn handle_bind(state: &AppState, sender_id: &str, frame: &Frame) {
             frame.client_id, frame.target_id, result.code
         ),
     );
-    let response =
-        json!({"type":"bind","clientId":frame.client_id,"targetId":frame.target_id,"message":result.code});
+    let response = json!({"type":"bind","clientId":frame.client_id,"targetId":frame.target_id,"message":result.code});
 
     if !result.ok {
         log_v3(
             LogLevel::Warn,
-            format!("bind failed: {} <-> {}, code={}", frame.client_id, frame.target_id, result.code),
+            format!(
+                "bind failed: {} <-> {}, code={}",
+                frame.client_id, frame.target_id, result.code
+            ),
         );
         send_to_client(&state.hub, sender_id, response);
         return;
@@ -334,15 +358,34 @@ fn handle_strength_adjust(state: &AppState, sender_id: &str, frame: &Frame, rout
                 frame.client_id, frame.target_id
             ),
         );
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
         return;
     }
     if !state.hub.is_paired(&frame.client_id, &frame.target_id) {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "402");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "402",
+        );
         return;
     }
-    let Some(channel) = protocol::normalize_channel(frame.channel.as_ref(), Some(Channel::A)) else {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "406");
+    let Some(channel) = protocol::normalize_channel(frame.channel.as_ref(), Some(Channel::A))
+    else {
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "406",
+        );
         return;
     };
 
@@ -359,21 +402,45 @@ fn handle_strength_adjust(state: &AppState, sender_id: &str, frame: &Frame, rout
         json!({"type":"msg","clientId":frame.client_id,"targetId":frame.target_id,"message":message}),
     );
     if !sent {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
     }
 }
 
 fn handle_custom_strength(state: &AppState, sender_id: &str, frame: &Frame) {
     if sender_id != frame.client_id {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
         return;
     }
     if !state.hub.is_paired(&frame.client_id, &frame.target_id) {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "402");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "402",
+        );
         return;
     }
     let Some(channel) = protocol::normalize_channel(frame.channel.as_ref(), None) else {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "406");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "406",
+        );
         return;
     };
 
@@ -385,11 +452,21 @@ fn handle_custom_strength(state: &AppState, sender_id: &str, frame: &Frame) {
             json!({"type":"msg","clientId":frame.client_id,"targetId":frame.target_id,"message":message}),
         );
         if !sent {
-            send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+            send_error(
+                &state.hub,
+                sender_id,
+                &frame.client_id,
+                &frame.target_id,
+                "404",
+            );
             return;
         }
         state.hub.clear_pulse_slot(&frame.client_id, channel);
-        send_to_client(&state.hub, sender_id, notify_done(&frame.client_id, &frame.target_id));
+        send_to_client(
+            &state.hub,
+            sender_id,
+            notify_done(&frame.client_id, &frame.target_id),
+        );
         return;
     }
 
@@ -401,25 +478,55 @@ fn handle_custom_strength(state: &AppState, sender_id: &str, frame: &Frame) {
         json!({"type":"msg","clientId":frame.client_id,"targetId":frame.target_id,"message":message}),
     );
     if !sent {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
     }
 }
 
 fn handle_client_message(state: &AppState, sender_id: &str, frame: &Frame) {
     if sender_id != frame.client_id {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
         return;
     }
     if !state.hub.is_paired(&frame.client_id, &frame.target_id) {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "402");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "402",
+        );
         return;
     }
     let Some(channel) = protocol::normalize_channel(frame.channel.as_ref(), None) else {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "406");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "406",
+        );
         return;
     };
     if !state.hub.is_connected(&frame.target_id) {
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
         return;
     }
 
@@ -468,7 +575,13 @@ fn forward_message(state: &AppState, sender_id: &str, frame: &Frame) {
                 frame.client_id, frame.target_id, frame.type_
             ),
         );
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "402");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "402",
+        );
         return;
     }
 
@@ -493,9 +606,17 @@ fn forward_message(state: &AppState, sender_id: &str, frame: &Frame) {
     if !sent {
         log_v3(
             LogLevel::Warn,
-            format!("forward message: recipient not found: sender={sender_id} recipient={recipient_id}"),
+            format!(
+                "forward message: recipient not found: sender={sender_id} recipient={recipient_id}"
+            ),
         );
-        send_error(&state.hub, sender_id, &frame.client_id, &frame.target_id, "404");
+        send_error(
+            &state.hub,
+            sender_id,
+            &frame.client_id,
+            &frame.target_id,
+            "404",
+        );
         return;
     }
 
@@ -524,7 +645,10 @@ fn queue_pulse(
     if had_existing {
         log_v3(
             LogLevel::Info,
-            format!("[{client_id}:{}] clearing existing timer, preparing to send new message", channel.letter()),
+            format!(
+                "[{client_id}:{}] clearing existing timer, preparing to send new message",
+                channel.letter()
+            ),
         );
         send_to_client(
             &state.hub,
@@ -548,7 +672,16 @@ fn queue_pulse(
         return;
     }
 
-    start_pulse(state, client_id, target_id, channel, messages, interval_ms, source_id, token);
+    start_pulse(
+        state,
+        client_id,
+        target_id,
+        channel,
+        messages,
+        interval_ms,
+        source_id,
+        token,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -566,7 +699,10 @@ fn start_pulse(
     let mut iter = messages.into_iter();
 
     let Some(first) = iter.next() else {
-        log_v3(LogLevel::Warn, format!("[{key}] waveform message is empty, stopping"));
+        log_v3(
+            LogLevel::Warn,
+            format!("[{key}] waveform message is empty, stopping"),
+        );
         state.hub.finish_pulse_slot(&client_id, channel);
         send_to_client(&state.hub, &source_id, notify_done(&client_id, &target_id));
         return;
@@ -577,7 +713,10 @@ fn start_pulse(
     send_pulse_packet(&state.hub, &key, &target_id, &client_id, &first, 1, total);
 
     if remaining.is_empty() {
-        log_v3(LogLevel::Info, format!("[{key}] message send complete (single packet)"));
+        log_v3(
+            LogLevel::Info,
+            format!("[{key}] message send complete (single packet)"),
+        );
         state.hub.finish_pulse_slot(&client_id, channel);
         send_to_client(&state.hub, &source_id, notify_done(&client_id, &target_id));
         return;
@@ -634,7 +773,10 @@ fn send_pulse_packet(
         json!({"type":"msg","clientId":client_id,"targetId":target_id,"message":message}),
     );
     if sent {
-        log_v3(LogLevel::Info, format!("[{key}] sent packet {index}/{total}: {message}"));
+        log_v3(
+            LogLevel::Info,
+            format!("[{key}] sent packet {index}/{total}: {message}"),
+        );
     }
 }
 

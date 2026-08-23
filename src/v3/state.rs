@@ -74,7 +74,11 @@ impl Hub {
             idle_token: idle_token.clone(),
             shutdown_token: shutdown_token.clone(),
         };
-        self.inner.lock().unwrap().connections.insert(client_id, entry);
+        self.inner
+            .lock()
+            .unwrap()
+            .connections
+            .insert(client_id, entry);
         (idle_token, shutdown_token)
     }
 
@@ -95,7 +99,11 @@ impl Hub {
     }
 
     pub fn is_connected(&self, client_id: &str) -> bool {
-        self.inner.lock().unwrap().connections.contains_key(client_id)
+        self.inner
+            .lock()
+            .unwrap()
+            .connections
+            .contains_key(client_id)
     }
 
     pub fn is_bound(&self, client_id: &str) -> bool {
@@ -115,7 +123,11 @@ impl Hub {
     /// pairing -- used by `forwardMessage`'s id-swap rule, which must be
     /// computed from live pairing state, never from a frame's own fields.
     pub fn is_app(&self, client_id: &str) -> bool {
-        self.inner.lock().unwrap().app_to_web.contains_key(client_id)
+        self.inner
+            .lock()
+            .unwrap()
+            .app_to_web
+            .contains_key(client_id)
     }
 
     pub fn pair(&self, web_id: &str, app_id: &str) -> PairResult {
@@ -255,27 +267,46 @@ fn clear_client_pulse_tokens_locked(inner: &mut HubInner, client_id: &str) {
 
 fn pair_locked(inner: &mut HubInner, web_id: &str, app_id: &str) -> PairResult {
     if web_id == app_id {
-        return PairResult { ok: false, code: "401" };
+        return PairResult {
+            ok: false,
+            code: "401",
+        };
     }
     if !inner.connections.contains_key(web_id) || !inner.connections.contains_key(app_id) {
-        return PairResult { ok: false, code: "401" };
+        return PairResult {
+            ok: false,
+            code: "401",
+        };
     }
     if is_paired_locked(inner, web_id, app_id) {
-        return PairResult { ok: true, code: "200" };
+        return PairResult {
+            ok: true,
+            code: "200",
+        };
     }
     if is_bound_locked(inner, web_id) || is_bound_locked(inner, app_id) {
-        return PairResult { ok: false, code: "400" };
+        return PairResult {
+            ok: false,
+            code: "400",
+        };
     }
 
-    inner.web_to_app.insert(web_id.to_string(), app_id.to_string());
-    inner.app_to_web.insert(app_id.to_string(), web_id.to_string());
+    inner
+        .web_to_app
+        .insert(web_id.to_string(), app_id.to_string());
+    inner
+        .app_to_web
+        .insert(app_id.to_string(), web_id.to_string());
     if let Some(entry) = inner.connections.get(web_id) {
         entry.idle_token.cancel();
     }
     if let Some(entry) = inner.connections.get(app_id) {
         entry.idle_token.cancel();
     }
-    PairResult { ok: true, code: "200" }
+    PairResult {
+        ok: true,
+        code: "200",
+    }
 }
 
 #[cfg(test)]

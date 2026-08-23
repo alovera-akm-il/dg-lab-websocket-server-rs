@@ -6,7 +6,7 @@
 //! editing them during development doesn't require a rebuild; release
 //! builds truly embed the bytes at compile time.
 
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::Embed;
 
@@ -19,7 +19,11 @@ struct Assets;
 /// isn't one of the embedded files.
 pub fn serve(path: &str) -> Response {
     match Assets::get(path) {
-        Some(file) => ([(header::CONTENT_TYPE, file.metadata.mimetype())], file.data).into_response(),
+        Some(file) => (
+            [(header::CONTENT_TYPE, file.metadata.mimetype())],
+            file.data,
+        )
+            .into_response(),
         None => (StatusCode::NOT_FOUND, "404 Not Found").into_response(),
     }
 }

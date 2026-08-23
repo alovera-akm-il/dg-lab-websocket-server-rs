@@ -6,7 +6,7 @@ use std::time::Duration;
 use axum::extract::ws::Message;
 use serde_json::json;
 
-use crate::logging::{log_v3, LogLevel};
+use crate::logging::{LogLevel, log_v3};
 
 use super::state::Hub;
 
@@ -32,5 +32,8 @@ pub fn spawn(hub: Arc<Hub>, interval_ms: u64) {
             }
         }
     });
-    log_v3(LogLevel::Info, format!("heartbeat started interval={interval_ms}ms"));
+    log_v3(
+        LogLevel::Info,
+        format!("heartbeat started interval={interval_ms}ms"),
+    );
 }

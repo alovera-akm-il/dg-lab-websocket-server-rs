@@ -107,7 +107,11 @@ impl Hub {
     }
 
     pub fn is_controller(&self, client_id: &str) -> bool {
-        self.inner.lock().unwrap().controllers.contains_key(client_id)
+        self.inner
+            .lock()
+            .unwrap()
+            .controllers
+            .contains_key(client_id)
     }
 
     /// Whether `id` is currently in use by any live connection (controller
@@ -120,7 +124,12 @@ impl Hub {
     /// Looks up any live connection's sender by id, controller or device
     /// alike.
     pub fn sender_of(&self, client_id: &str) -> Option<mpsc::UnboundedSender<Message>> {
-        self.inner.lock().unwrap().connections.get(client_id).map(|e| e.tx.clone())
+        self.inner
+            .lock()
+            .unwrap()
+            .connections
+            .get(client_id)
+            .map(|e| e.tx.clone())
     }
 
     pub fn shutdown_token_of(&self, client_id: &str) -> Option<CancellationToken> {
@@ -132,7 +141,11 @@ impl Hub {
             .map(|e| e.shutdown_token.clone())
     }
 
-    pub fn device_sender_under(&self, controller_id: &str, device_id: &str) -> Option<mpsc::UnboundedSender<Message>> {
+    pub fn device_sender_under(
+        &self,
+        controller_id: &str,
+        device_id: &str,
+    ) -> Option<mpsc::UnboundedSender<Message>> {
         let inner = self.inner.lock().unwrap();
         let controller = inner.controllers.get(controller_id)?;
         if !controller.devices.contains(device_id) {
@@ -142,7 +155,12 @@ impl Hub {
     }
 
     pub fn controller_of(&self, device_id: &str) -> Option<String> {
-        self.inner.lock().unwrap().client_to_controller.get(device_id).cloned()
+        self.inner
+            .lock()
+            .unwrap()
+            .client_to_controller
+            .get(device_id)
+            .cloned()
     }
 
     /// Attaches a device to an existing controller (`attachClient`'s
@@ -177,7 +195,11 @@ impl Hub {
             for device_id in controller.devices {
                 inner.client_to_controller.remove(&device_id);
                 if let Some(entry) = inner.connections.get(&device_id) {
-                    devices.push((device_id.clone(), entry.tx.clone(), entry.shutdown_token.clone()));
+                    devices.push((
+                        device_id.clone(),
+                        entry.tx.clone(),
+                        entry.shutdown_token.clone(),
+                    ));
                 }
             }
             return CloseOutcome::WasController { devices };
@@ -200,7 +222,10 @@ impl Hub {
             };
         }
 
-        CloseOutcome::WasDevice { controller: None, restart_idle: None }
+        CloseOutcome::WasDevice {
+            controller: None,
+            restart_idle: None,
+        }
     }
 
     pub fn reset_missed_pongs(&self, client_id: &str) {
@@ -215,7 +240,12 @@ impl Hub {
     pub fn tick_pings(
         &self,
         max_missed: u32,
-    ) -> Vec<(String, mpsc::UnboundedSender<Message>, CancellationToken, PingAction)> {
+    ) -> Vec<(
+        String,
+        mpsc::UnboundedSender<Message>,
+        CancellationToken,
+        PingAction,
+    )> {
         let mut inner = self.inner.lock().unwrap();
         inner
             .connections
@@ -227,7 +257,12 @@ impl Hub {
                     entry.missed_pongs += 1;
                     PingAction::SendPing
                 };
-                (id.clone(), entry.tx.clone(), entry.shutdown_token.clone(), action)
+                (
+                    id.clone(),
+                    entry.tx.clone(),
+                    entry.shutdown_token.clone(),
+                    action,
+                )
             })
             .collect()
     }
@@ -286,7 +321,10 @@ mod tests {
         // Removing dev1 still leaves dev2 attached -- no idle restart yet.
         let outcome = hub.remove_connection("dev1");
         match outcome {
-            CloseOutcome::WasDevice { controller, restart_idle } => {
+            CloseOutcome::WasDevice {
+                controller,
+                restart_idle,
+            } => {
                 assert_eq!(controller.unwrap().0, "ctrl");
                 assert!(restart_idle.is_none());
             }

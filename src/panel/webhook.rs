@@ -13,9 +13,9 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::logging::{log_panel, LogLevel};
+use crate::logging::{LogLevel, log_panel};
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -50,16 +50,27 @@ pub fn notify(url: Option<&str>, message: &str, extra: Value) {
 
     let url = url.to_string();
     tokio::spawn(async move {
-        let result = client().post(&url).timeout(TIMEOUT).json(&body).send().await;
+        let result = client()
+            .post(&url)
+            .timeout(TIMEOUT)
+            .json(&body)
+            .send()
+            .await;
         match result {
             Ok(response) if !response.status().is_success() => {
                 log_panel(
                     LogLevel::Warn,
-                    format!("webhook delivery to {url} returned status {}", response.status()),
+                    format!(
+                        "webhook delivery to {url} returned status {}",
+                        response.status()
+                    ),
                 );
             }
             Err(err) => {
-                log_panel(LogLevel::Warn, format!("webhook delivery to {url} failed: {err}"));
+                log_panel(
+                    LogLevel::Warn,
+                    format!("webhook delivery to {url} failed: {err}"),
+                );
             }
             Ok(_) => {}
         }

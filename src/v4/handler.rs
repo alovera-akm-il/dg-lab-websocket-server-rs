@@ -4,17 +4,17 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use axum::Router;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::Router;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::logging::{log_v4, LogLevel};
+use crate::logging::{LogLevel, log_v4};
 
 use super::config::Config;
 use super::state::{CloseOutcome, Hub};
@@ -55,10 +55,7 @@ fn extract_tid(query: Option<&str>) -> Option<String> {
     let query: HashMap<String, String> = query
         .and_then(|q| serde_urlencoded::from_str(q).ok())
         .unwrap_or_default();
-    query
-        .get("targetId")
-        .or_else(|| query.get("tid"))
-        .cloned()
+    query.get("targetId").or_else(|| query.get("tid")).cloned()
 }
 
 fn generate_client_id(hub: &Hub) -> String {
@@ -97,7 +94,9 @@ async fn handle_socket(socket: WebSocket, state: AppState, tid: Option<String>) 
             })));
             log_v4(
                 LogLevel::Warn,
-                format!("device rejected device={client_id} target={tid} reason=controller_not_found"),
+                format!(
+                    "device rejected device={client_id} target={tid} reason=controller_not_found"
+                ),
             );
             state.hub.remove_connection(&client_id);
             drop(tx);
@@ -107,9 +106,15 @@ async fn handle_socket(socket: WebSocket, state: AppState, tid: Option<String>) 
 
         send_frame(&tx, json!({"type":"controller_attached","clientId":tid}));
         if let Some(controller_tx) = state.hub.sender_of(&tid) {
-            send_frame(&controller_tx, json!({"type":"client_attached","clientId":client_id}));
+            send_frame(
+                &controller_tx,
+                json!({"type":"client_attached","clientId":client_id}),
+            );
         }
-        log_v4(LogLevel::Info, format!("device attached device={client_id} controller={tid}"));
+        log_v4(
+            LogLevel::Info,
+            format!("device attached device={client_id} controller={tid}"),
+        );
     } else {
         let idle_token = state.hub.register_controller(client_id.clone());
         super::idle::spawn(
@@ -119,7 +124,10 @@ async fn handle_socket(socket: WebSocket, state: AppState, tid: Option<String>) 
             idle_token,
             tx.clone(),
         );
-        log_v4(LogLevel::Info, format!("controller connected controller={client_id}"));
+        log_v4(
+            LogLevel::Info,
+            format!("controller connected controller={client_id}"),
+        );
     }
 
     loop {
@@ -155,16 +163,28 @@ fn on_close(state: &AppState, client_id: &str) {
                     reason: "controller_disconnected".into(),
                 })));
                 device_shutdown.cancel();
-                log_v4(LogLevel::Info, format!("evicted device device={device_id} controller={client_id}"));
+                log_v4(
+                    LogLevel::Info,
+                    format!("evicted device device={device_id} controller={client_id}"),
+                );
             }
             log_v4(
                 LogLevel::Info,
-                format!("controller disconnected controller={client_id} evicted={}", devices.len()),
+                format!(
+                    "controller disconnected controller={client_id} evicted={}",
+                    devices.len()
+                ),
             );
         }
-        CloseOutcome::WasDevice { controller, restart_idle } => {
+        CloseOutcome::WasDevice {
+            controller,
+            restart_idle,
+        } => {
             if let Some((controller_id, controller_tx)) = controller {
-                send_frame(&controller_tx, json!({"type":"client_disconnected","clientId":client_id}));
+                send_frame(
+                    &controller_tx,
+                    json!({"type":"client_disconnected","clientId":client_id}),
+                );
                 if let Some(idle_token) = restart_idle {
                     super::idle::spawn(
                         state.hub.clone(),
@@ -190,7 +210,10 @@ fn on_message(state: &AppState, client_id: &str, text: &str) {
     let parsed: Value = match serde_json::from_str(text) {
         Ok(v) => v,
         Err(_) => {
-            log_v4(LogLevel::Warn, format!("invalid WS JSON connection={client_id}"));
+            log_v4(
+                LogLevel::Warn,
+                format!("invalid WS JSON connection={client_id}"),
+            );
             return;
         }
     };
@@ -200,19 +223,28 @@ fn on_message(state: &AppState, client_id: &str, text: &str) {
     }
 
     let Some(obj) = parsed.as_object() else {
-        log_v4(LogLevel::Debug, format!("ignoring WS frame connection={client_id} type=-"));
+        log_v4(
+            LogLevel::Debug,
+            format!("ignoring WS frame connection={client_id} type=-"),
+        );
         return;
     };
     if obj.get("type").and_then(Value::as_str) != Some("message") {
         let type_desc = obj.get("type").and_then(Value::as_str).unwrap_or("-");
-        log_v4(LogLevel::Debug, format!("ignoring WS frame connection={client_id} type={type_desc}"));
+        log_v4(
+            LogLevel::Debug,
+            format!("ignoring WS frame connection={client_id} type={type_desc}"),
+        );
         return;
     }
     let data = obj.get("data").cloned().unwrap_or(Value::Null);
 
     if state.hub.is_controller(client_id) {
         let Some(device_id) = obj.get("clientId").and_then(Value::as_str) else {
-            log_v4(LogLevel::Warn, format!("WS target missing controller={client_id}"));
+            log_v4(
+                LogLevel::Warn,
+                format!("WS target missing controller={client_id}"),
+            );
             send_to_client(
                 &state.hub,
                 client_id,
@@ -224,10 +256,16 @@ fn on_message(state: &AppState, client_id: &str, text: &str) {
         match state.hub.device_sender_under(client_id, device_id) {
             Some(device_tx) => {
                 send_frame(&device_tx, json!({"type":"message","data":data}));
-                log_v4(LogLevel::Info, format!("WS forwarded controller={client_id} device={device_id}"));
+                log_v4(
+                    LogLevel::Info,
+                    format!("WS forwarded controller={client_id} device={device_id}"),
+                );
             }
             None => {
-                log_v4(LogLevel::Warn, format!("WS device not found controller={client_id} device={device_id}"));
+                log_v4(
+                    LogLevel::Warn,
+                    format!("WS device not found controller={client_id} device={device_id}"),
+                );
                 send_to_client(
                     &state.hub,
                     client_id,
@@ -238,15 +276,26 @@ fn on_message(state: &AppState, client_id: &str, text: &str) {
         return;
     }
 
-    match state.hub.controller_of(client_id).and_then(|cid| {
-        state.hub.sender_of(&cid).map(|tx| (cid, tx))
-    }) {
+    match state
+        .hub
+        .controller_of(client_id)
+        .and_then(|cid| state.hub.sender_of(&cid).map(|tx| (cid, tx)))
+    {
         Some((controller_id, controller_tx)) => {
-            send_frame(&controller_tx, json!({"type":"message","clientId":client_id,"data":data}));
-            log_v4(LogLevel::Info, format!("WS reported device={client_id} controller={controller_id}"));
+            send_frame(
+                &controller_tx,
+                json!({"type":"message","clientId":client_id,"data":data}),
+            );
+            log_v4(
+                LogLevel::Info,
+                format!("WS reported device={client_id} controller={controller_id}"),
+            );
         }
         None => {
-            log_v4(LogLevel::Warn, format!("WS controller missing device={client_id}"));
+            log_v4(
+                LogLevel::Warn,
+                format!("WS controller missing device={client_id}"),
+            );
         }
     }
 }

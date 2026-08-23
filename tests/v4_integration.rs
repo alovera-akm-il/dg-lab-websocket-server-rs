@@ -6,10 +6,10 @@ use std::time::Duration;
 
 use dg_lab_websocket_server_rs::v4;
 use futures_util::{SinkExt, StreamExt};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::net::TcpListener;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 type WsStream = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
@@ -69,7 +69,8 @@ async fn controller_device_attach_and_bidirectional_forward() {
     // controller -> device: no id fields on the device-bound envelope.
     controller
         .send(Message::text(
-            json!({"type":"message","clientId":device_id,"data":{"op":"example","value":1}}).to_string(),
+            json!({"type":"message","clientId":device_id,"data":{"op":"example","value":1}})
+                .to_string(),
         ))
         .await
         .unwrap();
@@ -80,7 +81,9 @@ async fn controller_device_attach_and_bidirectional_forward() {
 
     // device -> controller: envelope carries the device's clientId.
     device
-        .send(Message::text(json!({"type":"message","data":{"op":"report","value":2}}).to_string()))
+        .send(Message::text(
+            json!({"type":"message","data":{"op":"report","value":2}}).to_string(),
+        ))
         .await
         .unwrap();
     let reported = recv_json(&mut controller).await;
