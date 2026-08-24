@@ -10,6 +10,11 @@
   const sliderBEl = $('slider-b');
   const buttonActionEl = $('button-action');
   const activeDeviceEl = $('active-device');
+  const batteryRowEl = $('battery-row');
+  const channelAStatusEl = $('channel-a-status');
+  const channelBStatusEl = $('channel-b-status');
+  const overheatNoteEl = $('overheat-note');
+  const overheatNoteTextEl = $('overheat-note-text');
   const logEl = $('log');
   const logCountEl = $('log-count');
   const toast = $('toast');
@@ -17,6 +22,7 @@
   const summaryDotEl = $('summary-dot');
   const summaryTextEl = $('summary-text');
   const reconnectIconEl = $('reconnect-icon');
+  const infoPopoverEl = $('info-popover');
 
   const STATUS_LABELS = {
     connecting: 'Connecting to relay...',
@@ -45,6 +51,46 @@
     setTimeout(() => { el.style.color = ''; }, 450);
   }
 
+  // -- tap-to-open info popover ---------------------------------------
+  //
+  // Explains an ambiguous reading (e.g. "battery: 0" that might just mean
+  // "not reported") without relying on a `title` attribute's hover-only
+  // tooltip, which never fires on a touchscreen -- and this panel is
+  // routinely opened from the very phone that's pairing. Delegated on
+  // `document` (rather than wired per-button) since the elements that
+  // trigger it, like the battery pill, get rebuilt from scratch on every
+  // SSE render.
+  let openInfoTrigger = null;
+
+  function hideInfoPopover() {
+    infoPopoverEl.hidden = true;
+    openInfoTrigger = null;
+  }
+
+  function showInfoPopover(trigger) {
+    infoPopoverEl.textContent = trigger.dataset.infoText || '';
+    infoPopoverEl.hidden = false;
+    const rect = trigger.getBoundingClientRect();
+    const maxLeft = window.innerWidth - infoPopoverEl.offsetWidth - 12;
+    const left = Math.max(12, Math.min(rect.left, Math.max(12, maxLeft)));
+    infoPopoverEl.style.top = `${rect.bottom + 6}px`;
+    infoPopoverEl.style.left = `${left}px`;
+    openInfoTrigger = trigger;
+  }
+
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.info-btn');
+    if (btn) {
+      e.stopPropagation();
+      if (openInfoTrigger === btn) hideInfoPopover(); else showInfoPopover(btn);
+      return;
+    }
+    if (openInfoTrigger && !infoPopoverEl.contains(e.target)) hideInfoPopover();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideInfoPopover();
+  });
+
   function renderLeg(suffix, status, active, isPaired) {
     $(`status-dot-${suffix}`).className = 'dot ' + status;
     $(`status-label-${suffix}`).textContent = STATUS_LABELS[status] || status;
@@ -61,6 +107,86 @@
       box.innerHTML = '<span class="qr-placeholder">Waiting for controller id&hellip;</span>';
     }
     $(`pair-link-${suffix}`).textContent = pairUrl || '';
+  }
+
+  // -- device health: battery, per-channel output status, overheat -------
+  //
+  // All V4/Coyote-only (see docs/api.md) -- blank on V3, same "protocol
+  // reports what the other doesn't" pattern already used for strength's
+  // soft limit.
+  function batteryLevelClass(pct) {
+    if (pct <= 20) return 'critical';
+    if (pct <= 50) return 'low';
+    return 'ok';
+  }
+
+  // A reading of exactly 0 is indistinguishable, on the wire, from a
+  // device/APP combination that just doesn't populate `power` at all --
+  // we've confirmed this happens in practice (a real device sitting at a
+  // healthy charge, per its own APP, still reports `power: 0` over V4
+  // indefinitely). Rather than presenting that with the same confidence
+  // as a real reading (and risking it read as "critically low"), flag it
+  // as unreported instead of guessing either way.
+  function renderBattery(pct) {
+    if (pct == null) {
+      batteryRowEl.textContent = '-';
+      return;
+    }
+    if (pct === 0) {
+      batteryRowEl.innerHTML =
+        '<span class="battery-pill unreported">' +
+        '<svg class="battery-icon" width="20" height="11" viewBox="0 0 22 12">' +
+        '<rect class="battery-outline" x="1" y="1" width="17" height="10" rx="2"></rect>' +
+        '<rect class="battery-nub" x="19.5" y="4" width="2" height="4" rx="1"></rect>' +
+        '</svg>' +
+        '<span class="mono">not reported</span>' +
+        '<button type="button" class="info-btn" aria-label="Why is this uncertain?" ' +
+        'data-info-text="This device/APP is not sending a real battery level over V4 — 0% here does not necessarily mean the battery is actually empty.">' +
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+        '</button>' +
+        '</span>';
+      return;
+    }
+    const fillWidth = Math.max(0, Math.min(14, (pct / 100) * 14));
+    batteryRowEl.innerHTML =
+      `<span class="battery-pill ${batteryLevelClass(pct)}">` +
+      '<svg class="battery-icon" width="20" height="11" viewBox="0 0 22 12">' +
+      '<rect class="battery-outline" x="1" y="1" width="17" height="10" rx="2"></rect>' +
+      '<rect class="battery-nub" x="19.5" y="4" width="2" height="4" rx="1"></rect>' +
+      `<rect class="battery-fill" x="3" y="3" width="${fillWidth.toFixed(1)}" height="6" rx="1"></rect>` +
+      '</svg>' +
+      `<span class="mono">${pct}%</span>` +
+      '</span>';
+  }
+
+  function channelStatusClass(code) {
+    if (code === 2) return 'ok'; // normal
+    if (code === 3) return 'err'; // damaged
+    return 'warn'; // no output / open circuit / masked
+  }
+
+  function renderChannelStatus(el, code, label) {
+    if (code == null) {
+      el.hidden = true;
+      return;
+    }
+    el.hidden = false;
+    el.className = `channel-status ${channelStatusClass(code)}`;
+    el.textContent = label || code;
+  }
+
+  function renderOverheat(state) {
+    const messages = [];
+    if (state.channelAOverheat) {
+      messages.push(`Channel A is in overheat cooldown (${state.channelAOverheatPercent ?? '?'}%)`);
+    }
+    if (state.channelBOverheat) {
+      messages.push(`Channel B is in overheat cooldown (${state.channelBOverheatPercent ?? '?'}%)`);
+    }
+    overheatNoteEl.hidden = messages.length === 0;
+    if (messages.length) {
+      overheatNoteTextEl.textContent = `${messages.join('; ')} — strength increases may not take effect until it clears.`;
+    }
   }
 
   // -- live strength sliders --------------------------------------------
@@ -168,6 +294,10 @@
       : '-';
     strengthAEl.textContent = strengthAText;
     strengthBEl.textContent = strengthBText;
+    renderBattery(state.battery);
+    renderChannelStatus(channelAStatusEl, state.channelAStatus, state.channelAStatusLabel);
+    renderChannelStatus(channelBStatusEl, state.channelBStatus, state.channelBStatusLabel);
+    renderOverheat(state);
     if (prevStrengthA !== undefined && state.strengthA !== prevStrengthA && !sliderA.isDragging()) flash(strengthAInlineEl);
     if (prevStrengthB !== undefined && state.strengthB !== prevStrengthB && !sliderB.isDragging()) flash(strengthBInlineEl);
     prevStrengthA = state.strengthA;

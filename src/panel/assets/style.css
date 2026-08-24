@@ -126,9 +126,53 @@ h1 { font-size: 19px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
 .tag-v4 { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-border); }
 .tag-v3 { background: var(--v3-bg); color: var(--v3); border-color: oklch(45% 0.08 305); }
 
-dl.meta { margin: 14px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 14px; font-size: 12.5px; }
+dl.meta { margin: 14px 0 0; display: grid; grid-template-columns: auto 1fr; gap: 9px 14px; font-size: 12.5px; align-items: center; }
 dl.meta dt { color: var(--faint); }
-dl.meta dd { margin: 0; word-break: break-all; }
+dl.meta dd { margin: 0; word-break: break-all; display: flex; align-items: center; gap: 8px; }
+
+/* -- battery -- */
+.battery-pill { display: inline-flex; align-items: center; gap: 6px; }
+.battery-icon { flex: none; }
+.battery-pill.ok .battery-icon { color: var(--ok); }
+.battery-pill.low .battery-icon { color: var(--warn); }
+.battery-pill.critical .battery-icon { color: var(--err); }
+.battery-pill.unreported .battery-icon { color: var(--faint); }
+.battery-pill.unreported .mono { color: var(--faint); }
+
+/* -- tap-to-open info popover: a `title` attribute needs hover, which a
+   touchscreen never fires, so anything explaining an ambiguous reading
+   (this panel is opened from the phone that's pairing, mouse-hover isn't
+   a given) uses this instead -- see `.info-btn` in app.js. -- */
+.info-btn {
+  display: inline-flex; align-items: center; color: var(--warn);
+  background: none; border: none; padding: 0; font: inherit; cursor: pointer;
+}
+.info-popover {
+  position: fixed; z-index: 60; max-width: 240px;
+  background: var(--panel-3); border: 1px solid var(--border-hover); border-radius: 10px;
+  padding: 8px 10px; font-size: 11.5px; line-height: 1.5; color: var(--text);
+  box-shadow: 0 8px 24px -8px rgba(0,0,0,0.6);
+}
+.battery-outline { fill: none; stroke: currentColor; stroke-width: 1.4; opacity: 0.55; }
+.battery-nub { fill: currentColor; opacity: 0.55; }
+.battery-fill { fill: currentColor; }
+
+/* -- per-channel output status (V4/Coyote only, from `channelAStatus`/
+   `channelBStatus`; see docs/api.md) -- */
+.channel-status {
+  display: inline-flex; align-items: center; font-size: 10px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.04em; padding: 2px 7px; border-radius: 999px; border: 1px solid;
+}
+.channel-status.ok { background: oklch(28% 0.05 152); color: var(--ok); border-color: oklch(45% 0.08 152); }
+.channel-status.warn { background: var(--warn-bg); color: var(--warn); border-color: oklch(45% 0.08 85); }
+.channel-status.err { background: oklch(28% 0.08 25); color: var(--err); border-color: oklch(45% 0.1 25); }
+
+#overheat-note { display: flex; align-items: flex-start; gap: 8px; }
+/* Same pitfall as .active-badge above: an ID selector setting `display`
+   outranks the browser's default `[hidden] { display: none }` rule, so
+   this needs the explicit override or the banner never actually hides. */
+#overheat-note[hidden] { display: none; }
+#overheat-note svg { flex: none; margin-top: 1px; }
 
 .qr-pair { display: flex; gap: 28px; flex-wrap: wrap; }
 .qr-pair .qr-wrap { display: flex; gap: 14px; align-items: flex-start; }

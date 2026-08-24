@@ -73,6 +73,28 @@ impl Protocol {
     }
 }
 
+/// Extra Coyote-specific telemetry from V4's `props`/`slotState`, beyond
+/// the channel intensities every device type reports -- see
+/// `v4_client::extract_health`. `channel_*_status`/`channel_*_overheat*`
+/// are documented by `dglab-kit` as Coyote-only (`COYOTE_020`/`COYOTE_030`),
+/// so they stay `None` for other device types, same as any field a given
+/// `props`/`slotState` payload simply didn't include this tick.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DeviceHealth {
+    /// `props.power`, 0-100.
+    pub battery: Option<i64>,
+    /// `props.channelAStatus`/`channelBStatus`, 0-4 (no output / open
+    /// circuit / normal / damaged / masked) -- see
+    /// `v4_client::channel_status_label` for the decoded meaning.
+    pub channel_a_status: Option<i64>,
+    pub channel_b_status: Option<i64>,
+    /// `slotState.channelA/B.comfortLimit.overheat`/`overheatPercent`.
+    pub channel_a_overheat: Option<bool>,
+    pub channel_b_overheat: Option<bool>,
+    pub channel_a_overheat_pct: Option<i64>,
+    pub channel_b_overheat_pct: Option<i64>,
+}
+
 struct Inner {
     // -- V3 leg --
     status: Status,
@@ -111,6 +133,16 @@ struct Inner {
     /// by dglab-kit as the same concept as V3's `feedback-*`).
     last_button_action: Option<i64>,
 
+    /// See [`DeviceHealth`] -- V4-only, mirroring how `soft_limit_a/b`
+    /// above are V3-only (each protocol reports what the other doesn't).
+    battery: Option<i64>,
+    channel_a_status: Option<i64>,
+    channel_b_status: Option<i64>,
+    channel_a_overheat: Option<bool>,
+    channel_b_overheat: Option<bool>,
+    channel_a_overheat_pct: Option<i64>,
+    channel_b_overheat_pct: Option<i64>,
+
     /// Operator-configured safety cap: the panel refuses to send any
     /// Inc/Set command that would push a channel's strength above this.
     /// `None` means no cap. This is a *panel-side* application-level
@@ -148,6 +180,13 @@ pub struct Snapshot {
     pub soft_limit_a: Option<i64>,
     pub soft_limit_b: Option<i64>,
     pub last_button_action: Option<i64>,
+    pub battery: Option<i64>,
+    pub channel_a_status: Option<i64>,
+    pub channel_b_status: Option<i64>,
+    pub channel_a_overheat: Option<bool>,
+    pub channel_b_overheat: Option<bool>,
+    pub channel_a_overheat_pct: Option<i64>,
+    pub channel_b_overheat_pct: Option<i64>,
     pub limit_a: Option<i64>,
     pub limit_b: Option<i64>,
     pub webhook_url: Option<String>,
@@ -193,6 +232,13 @@ impl PanelState {
                 soft_limit_a: None,
                 soft_limit_b: None,
                 last_button_action: None,
+                battery: None,
+                channel_a_status: None,
+                channel_b_status: None,
+                channel_a_overheat: None,
+                channel_b_overheat: None,
+                channel_a_overheat_pct: None,
+                channel_b_overheat_pct: None,
                 limit_a: None,
                 limit_b: None,
                 webhook_url: None,
@@ -229,6 +275,13 @@ impl PanelState {
             soft_limit_a: inner.soft_limit_a,
             soft_limit_b: inner.soft_limit_b,
             last_button_action: inner.last_button_action,
+            battery: inner.battery,
+            channel_a_status: inner.channel_a_status,
+            channel_b_status: inner.channel_b_status,
+            channel_a_overheat: inner.channel_a_overheat,
+            channel_b_overheat: inner.channel_b_overheat,
+            channel_a_overheat_pct: inner.channel_a_overheat_pct,
+            channel_b_overheat_pct: inner.channel_b_overheat_pct,
             limit_a: inner.limit_a,
             limit_b: inner.limit_b,
             webhook_url: inner.webhook_url.clone(),
@@ -442,6 +495,7 @@ impl PanelState {
         name: String,
         strength_a: Option<i64>,
         strength_b: Option<i64>,
+        health: DeviceHealth,
     ) {
         {
             let mut inner = self.inner.lock().unwrap();
@@ -456,6 +510,7 @@ impl PanelState {
                 if let Some(b) = strength_b {
                     inner.strength_b = Some(b);
                 }
+                apply_health(&mut inner, health);
             }
         }
         self.notify_changed();
@@ -468,6 +523,7 @@ impl PanelState {
         slot_id: &str,
         strength_a: Option<i64>,
         strength_b: Option<i64>,
+        health: DeviceHealth,
     ) {
         {
             let mut inner = self.inner.lock().unwrap();
@@ -480,6 +536,7 @@ impl PanelState {
                 if let Some(b) = strength_b {
                     inner.strength_b = Some(b);
                 }
+                apply_health(&mut inner, health);
             }
         }
         self.notify_changed();
@@ -798,6 +855,7 @@ fn activate(inner: &mut Inner, protocol: Protocol) {
         inner.soft_limit_a = None;
         inner.soft_limit_b = None;
         inner.last_button_action = None;
+        clear_health(inner);
     }
     inner.active_protocol = Some(protocol);
 }
@@ -814,6 +872,7 @@ fn deactivate_if_active(inner: &mut Inner, protocol: Protocol) {
     inner.soft_limit_a = None;
     inner.soft_limit_b = None;
     inner.last_button_action = None;
+    clear_health(inner);
 
     let other_still_has_device = match protocol {
         Protocol::V3 => inner.v4_device_slot_id.is_some(),
@@ -827,6 +886,45 @@ fn deactivate_if_active(inner: &mut Inner, protocol: Protocol) {
     } else {
         None
     };
+}
+
+fn clear_health(inner: &mut Inner) {
+    inner.battery = None;
+    inner.channel_a_status = None;
+    inner.channel_b_status = None;
+    inner.channel_a_overheat = None;
+    inner.channel_b_overheat = None;
+    inner.channel_a_overheat_pct = None;
+    inner.channel_b_overheat_pct = None;
+}
+
+/// Overwrites only the fields `health` actually carries a value for,
+/// leaving the rest at whatever was last known -- same "partial update"
+/// treatment `strength_a`/`strength_b` already get from `v4_set_device`/
+/// `v4_update_device`, appropriate for `slots.patch`'s incremental
+/// payloads (which only include what changed this tick).
+fn apply_health(inner: &mut Inner, health: DeviceHealth) {
+    if let Some(v) = health.battery {
+        inner.battery = Some(v);
+    }
+    if let Some(v) = health.channel_a_status {
+        inner.channel_a_status = Some(v);
+    }
+    if let Some(v) = health.channel_b_status {
+        inner.channel_b_status = Some(v);
+    }
+    if let Some(v) = health.channel_a_overheat {
+        inner.channel_a_overheat = Some(v);
+    }
+    if let Some(v) = health.channel_b_overheat {
+        inner.channel_b_overheat = Some(v);
+    }
+    if let Some(v) = health.channel_a_overheat_pct {
+        inner.channel_a_overheat_pct = Some(v);
+    }
+    if let Some(v) = health.channel_b_overheat_pct {
+        inner.channel_b_overheat_pct = Some(v);
+    }
 }
 
 impl Default for PanelState {
@@ -1020,7 +1118,13 @@ mod tests {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         state.v4_set_connected("vc1".into(), tx);
         state.v4_set_app_attached("app1".into());
-        state.v4_set_device("slot1".into(), "Coyote".into(), Some(10), Some(20));
+        state.v4_set_device(
+            "slot1".into(),
+            "Coyote".into(),
+            Some(10),
+            Some(20),
+            DeviceHealth::default(),
+        );
 
         let snap = state.snapshot();
         assert_eq!(snap.v4_status, Status::Paired);
@@ -1044,7 +1148,13 @@ mod tests {
         let (tx4, _rx4) = tokio::sync::mpsc::unbounded_channel();
         state.v4_set_connected("c4".into(), tx4);
         state.v4_set_app_attached("app4".into());
-        state.v4_set_device("slot4".into(), "Coyote".into(), Some(5), Some(5));
+        state.v4_set_device(
+            "slot4".into(),
+            "Coyote".into(),
+            Some(5),
+            Some(5),
+            DeviceHealth::default(),
+        );
         assert_eq!(state.snapshot().active_protocol, Some(Protocol::V4));
     }
 
@@ -1058,7 +1168,13 @@ mod tests {
         let (tx4, _rx4) = tokio::sync::mpsc::unbounded_channel();
         state.v4_set_connected("c4".into(), tx4);
         state.v4_set_app_attached("app4".into());
-        state.v4_set_device("slot4".into(), "Coyote".into(), None, None);
+        state.v4_set_device(
+            "slot4".into(),
+            "Coyote".into(),
+            None,
+            None,
+            DeviceHealth::default(),
+        );
         assert_eq!(state.snapshot().active_protocol, Some(Protocol::V4));
 
         // V4 device drops -- V3 is still paired, so it becomes active again.
@@ -1092,7 +1208,13 @@ mod tests {
         // if it wasn't already the active leg, so attaching V4 here makes
         // it active per "most recent wins". To test the ignore-if-inactive
         // path, update the tracked V4 device *after* V3 re-takes activity.
-        state.v4_set_device("slot4".into(), "Coyote".into(), Some(1), Some(1));
+        state.v4_set_device(
+            "slot4".into(),
+            "Coyote".into(),
+            Some(1),
+            Some(1),
+            DeviceHealth::default(),
+        );
         assert_eq!(state.snapshot().active_protocol, Some(Protocol::V4));
 
         // A stray V3 report arrives while V4 is active -- ignored.

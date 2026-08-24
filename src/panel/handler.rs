@@ -24,7 +24,8 @@ use uuid::Uuid;
 use super::config::Config;
 use super::state::{ActiveTarget, PanelState, Snapshot};
 use super::{
-    assets, commands, network, playlist, playlist_runner, presets, qrcode, v4_commands, webhook,
+    assets, commands, network, playlist, playlist_runner, presets, qrcode, v4_client, v4_commands,
+    webhook,
 };
 
 #[derive(Clone)]
@@ -181,6 +182,15 @@ fn snapshot_json(
         "softLimitA": snapshot.soft_limit_a,
         "softLimitB": snapshot.soft_limit_b,
         "lastButtonAction": snapshot.last_button_action,
+        "battery": snapshot.battery,
+        "channelAStatus": snapshot.channel_a_status,
+        "channelAStatusLabel": snapshot.channel_a_status.map(v4_client::channel_status_label),
+        "channelBStatus": snapshot.channel_b_status,
+        "channelBStatusLabel": snapshot.channel_b_status.map(v4_client::channel_status_label),
+        "channelAOverheat": snapshot.channel_a_overheat,
+        "channelAOverheatPercent": snapshot.channel_a_overheat_pct,
+        "channelBOverheat": snapshot.channel_b_overheat,
+        "channelBOverheatPercent": snapshot.channel_b_overheat_pct,
         "limitA": snapshot.limit_a,
         "limitB": snapshot.limit_b,
         "webhookUrl": snapshot.webhook_url,

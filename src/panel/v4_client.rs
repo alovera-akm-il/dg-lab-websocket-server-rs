@@ -17,7 +17,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use crate::logging::{LogLevel, log_panel};
 
 use super::relay_client::decode_button_feedback;
-use super::state::{PanelState, Protocol};
+use super::state::{DeviceHealth, PanelState, Protocol};
 
 pub async fn run(v4_port: u16, prefix: String, state: Arc<PanelState>) {
     loop {
@@ -202,7 +202,8 @@ fn handle_app_event(state: &Arc<PanelState>, data: &Value) {
                         continue;
                     };
                     let (strength_a, strength_b) = extract_intensities(slot.get("props"));
-                    state.v4_update_device(slot_id, strength_a, strength_b);
+                    let health = extract_health(slot.get("props"), slot.get("slotState"));
+                    state.v4_update_device(slot_id, strength_a, strength_b, health);
                 }
             }
         }
@@ -230,11 +231,12 @@ fn apply_device(state: &Arc<PanelState>, device: &Value) {
         .unwrap_or("device")
         .to_string();
     let (strength_a, strength_b) = extract_intensities(device.get("props"));
+    let health = extract_health(device.get("props"), device.get("slotState"));
     state.log_with(
         format!("V4 device available: {name} ({slot_id})"),
         json!({"event": "device_status", "protocol": "v4", "slotId": slot_id, "name": name}),
     );
-    state.v4_set_device(slot_id.to_string(), name, strength_a, strength_b);
+    state.v4_set_device(slot_id.to_string(), name, strength_a, strength_b, health);
 }
 
 /// Reads `props.intensityA`/`props.intensityB` -- the documented Coyote
@@ -248,6 +250,56 @@ fn extract_intensities(props: Option<&Value>) -> (Option<i64>, Option<i64>) {
         .and_then(|p| p.get("intensityB"))
         .and_then(Value::as_i64);
     (a, b)
+}
+
+/// Reads the rest of a Coyote device's telemetry `dglab-kit`'s README
+/// documents under `props`/`slotState` (battery, per-channel output
+/// status, per-channel overheat cooldown) -- see [`DeviceHealth`]'s own
+/// field docs for exactly which wire path each one comes from. Absent on
+/// non-Coyote device types (and simply `None` there, same as any field a
+/// given payload doesn't happen to include this tick).
+fn extract_health(props: Option<&Value>, slot_state: Option<&Value>) -> DeviceHealth {
+    let overheat = |channel: &str| -> (Option<bool>, Option<i64>) {
+        let comfort_limit = slot_state
+            .and_then(|s| s.get(channel))
+            .and_then(|c| c.get("comfortLimit"));
+        let overheat = comfort_limit
+            .and_then(|c| c.get("overheat"))
+            .and_then(Value::as_bool);
+        let pct = comfort_limit
+            .and_then(|c| c.get("overheatPercent"))
+            .and_then(Value::as_i64);
+        (overheat, pct)
+    };
+    let (channel_a_overheat, channel_a_overheat_pct) = overheat("channelA");
+    let (channel_b_overheat, channel_b_overheat_pct) = overheat("channelB");
+
+    DeviceHealth {
+        battery: props.and_then(|p| p.get("power")).and_then(Value::as_i64),
+        channel_a_status: props
+            .and_then(|p| p.get("channelAStatus"))
+            .and_then(Value::as_i64),
+        channel_b_status: props
+            .and_then(|p| p.get("channelBStatus"))
+            .and_then(Value::as_i64),
+        channel_a_overheat,
+        channel_b_overheat,
+        channel_a_overheat_pct,
+        channel_b_overheat_pct,
+    }
+}
+
+/// Decodes a Coyote `channelAStatus`/`channelBStatus` code (`dglab-kit`'s
+/// README: 0-4) into a short display label.
+pub fn channel_status_label(code: i64) -> &'static str {
+    match code {
+        0 => "no output",
+        1 => "open circuit",
+        2 => "normal",
+        3 => "damaged",
+        4 => "masked",
+        _ => "unknown",
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +318,49 @@ mod tests {
         assert_eq!(extract_intensities(Some(&props)), (Some(12), Some(34)));
         assert_eq!(extract_intensities(None), (None, None));
         assert_eq!(extract_intensities(Some(&json!({}))), (None, None));
+    }
+
+    #[test]
+    fn extract_health_reads_battery_and_channel_status_from_props() {
+        let props = json!({"power": 82, "channelAStatus": 2, "channelBStatus": 1});
+        let health = extract_health(Some(&props), None);
+        assert_eq!(health.battery, Some(82));
+        assert_eq!(health.channel_a_status, Some(2));
+        assert_eq!(health.channel_b_status, Some(1));
+        assert_eq!(health.channel_a_overheat, None);
+    }
+
+    #[test]
+    fn extract_health_reads_overheat_from_nested_slot_state() {
+        let slot_state = json!({
+            "channelA": {"comfortLimit": {"overheat": true, "overheatPercent": 68}},
+            "channelB": {"comfortLimit": {"overheat": false, "overheatPercent": 0}},
+        });
+        let health = extract_health(None, Some(&slot_state));
+        assert_eq!(health.channel_a_overheat, Some(true));
+        assert_eq!(health.channel_a_overheat_pct, Some(68));
+        assert_eq!(health.channel_b_overheat, Some(false));
+        assert_eq!(health.channel_b_overheat_pct, Some(0));
+        assert_eq!(health.battery, None);
+    }
+
+    #[test]
+    fn extract_health_is_all_none_when_absent() {
+        let health = extract_health(None, None);
+        assert_eq!(health.battery, None);
+        assert_eq!(health.channel_a_status, None);
+        assert_eq!(health.channel_a_overheat, None);
+        assert_eq!(health.channel_a_overheat_pct, None);
+    }
+
+    #[test]
+    fn channel_status_label_matches_documented_codes() {
+        assert_eq!(channel_status_label(0), "no output");
+        assert_eq!(channel_status_label(1), "open circuit");
+        assert_eq!(channel_status_label(2), "normal");
+        assert_eq!(channel_status_label(3), "damaged");
+        assert_eq!(channel_status_label(4), "masked");
+        assert_eq!(channel_status_label(99), "unknown");
     }
 
     #[tokio::test]
@@ -299,7 +394,11 @@ mod tests {
             "type": "message",
             "clientId": "app1",
             "data": {"t": "ev", "ev": "devices.snapshot", "devices": [
-                {"slotId": "slot1", "name": "Coyote", "type": "COYOTE_030", "props": {"intensityA": 5, "intensityB": 6}}
+                {
+                    "slotId": "slot1", "name": "Coyote", "type": "COYOTE_030",
+                    "props": {"intensityA": 5, "intensityB": 6, "power": 82, "channelAStatus": 2, "channelBStatus": 1},
+                    "slotState": {"channelA": {"comfortLimit": {"overheat": true, "overheatPercent": 68}}},
+                }
             ]},
         });
         handle_frame(&state, &msg.to_string(), &tx);
@@ -308,6 +407,11 @@ mod tests {
         assert_eq!(snap.v4_device_slot_id.as_deref(), Some("slot1"));
         assert_eq!(snap.strength_a, Some(5));
         assert_eq!(snap.strength_b, Some(6));
+        assert_eq!(snap.battery, Some(82));
+        assert_eq!(snap.channel_a_status, Some(2));
+        assert_eq!(snap.channel_b_status, Some(1));
+        assert_eq!(snap.channel_a_overheat, Some(true));
+        assert_eq!(snap.channel_a_overheat_pct, Some(68));
         assert!(matches!(
             state.active_target(),
             Some(super::super::state::ActiveTarget::V4 { .. })
