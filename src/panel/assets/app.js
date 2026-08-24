@@ -197,6 +197,9 @@
     prevLogLength = log.length;
     logCountEl.textContent = `${log.length} events`;
     if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
+
+    playlistA.render(state.playlistA);
+    playlistB.render(state.playlistB);
   }
 
   const events = new EventSource('/events');
@@ -214,6 +217,15 @@
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body || {}),
     });
+    if (!res.ok) {
+      let message = res.statusText;
+      try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
+      showToast(message);
+    }
+  }
+
+  async function deleteJson(url) {
+    const res = await fetch(url, { method: 'DELETE' });
     if (!res.ok) {
       let message = res.statusText;
       try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
@@ -384,11 +396,6 @@
   const presetPickerA = makePresetPicker('a');
   const presetPickerB = makePresetPicker('b');
 
-  fetch('/api/presets').then((r) => r.json()).then((presets) => {
-    presetPickerA.populate(presets);
-    presetPickerB.populate(presets);
-  });
-
   function wirePulseChannel(suffix, channel) {
     $(`trigger-preset-${suffix}`).addEventListener('click', () => {
       const picker = suffix === 'a' ? presetPickerA : presetPickerB;
@@ -414,4 +421,308 @@
 
   wirePulseChannel('a', 'A');
   wirePulseChannel('b', 'B');
+
+  // -- Single/Playlist mode switch ----------------------------------------
+
+  function wireModeToggle(suffix) {
+    const toggle = $(`mode-toggle-${suffix}`);
+    const singleEl = $(`single-mode-${suffix}`);
+    const playlistEl = $(`playlist-mode-${suffix}`);
+    toggle.querySelectorAll('.mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        toggle.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b === btn));
+        singleEl.hidden = btn.dataset.mode !== 'single';
+        playlistEl.hidden = btn.dataset.mode !== 'playlist';
+      });
+    });
+  }
+  wireModeToggle('a');
+  wireModeToggle('b');
+
+  // -- pulse playlists ------------------------------------------------------
+  //
+  // Each queue entry's own duration is either fixed or randomized -- there
+  // is no separate global "random duration" setting on the server, only
+  // what's stored per entry at add time. The dice toggles here only decide
+  // whether the *next* thing "+ Add"/"+ Add gap" creates uses a single
+  // duration field or a min/max range; see
+  // docs/channel-playlists-implementation.md.
+
+  const DICE_ICON_SVG =
+    '<svg class="mini-dice" width="10" height="10" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4">' +
+    '<rect x="2" y="2" width="10" height="10" rx="2"/><circle cx="5" cy="5" r="0.8" fill="currentColor" stroke="none"/>' +
+    '<circle cx="9" cy="9" r="0.8" fill="currentColor" stroke="none"/><circle cx="7" cy="7" r="0.8" fill="currentColor" stroke="none"/></svg>';
+  const DRAG_HANDLE_SVG =
+    '<svg class="drag-handle" width="10" height="16" viewBox="0 0 10 16"><circle cx="2" cy="3" r="1.3"/><circle cx="2" cy="8" r="1.3"/>' +
+    '<circle cx="2" cy="13" r="1.3"/><circle cx="7" cy="3" r="1.3"/><circle cx="7" cy="8" r="1.3"/><circle cx="7" cy="13" r="1.3"/></svg>';
+  const REMOVE_ICON_SVG =
+    '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18"/><path d="M6 6l12 12"/></svg>';
+  const GAP_ICON_SVG =
+    '<svg class="gap-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M11 5 6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+  const PLAY_ICON_SVG = '<path d="M6 4l14 8-14 8V4z"/>';
+  const PAUSE_ICON_SVG = '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>';
+
+  function svgFragment(markup) {
+    const span = document.createElement('span');
+    span.innerHTML = markup;
+    return span.firstChild;
+  }
+
+  // Toggles a "+ Add" row's duration field between one fixed-seconds input
+  // and a min/max pair, and reports whichever shape is currently active.
+  function wireDurationToggle(toggleId, fixedId, minId, sepId, maxId) {
+    const toggle = $(toggleId);
+    const fixed = $(fixedId);
+    const min = $(minId);
+    const sep = $(sepId);
+    const max = $(maxId);
+    let random = false;
+    toggle.addEventListener('click', () => {
+      random = !random;
+      toggle.classList.toggle('active', random);
+      fixed.hidden = random;
+      min.hidden = !random;
+      sep.hidden = !random;
+      max.hidden = !random;
+    });
+    return {
+      getSpec() {
+        if (random) {
+          return {
+            mode: 'random',
+            min: parseInt(min.value, 10) || 1,
+            max: parseInt(max.value, 10) || 1,
+          };
+        }
+        return { mode: 'fixed', seconds: parseInt(fixed.value, 10) || 1 };
+      },
+    };
+  }
+
+  function durationLabel(duration) {
+    return duration.mode === 'random' ? `${duration.min}–${duration.max}s` : `${duration.seconds}s`;
+  }
+
+  function makePlaylistController(suffix) {
+    const base = `/api/playlist/${suffix}`;
+    const picker = makePresetPicker(`playlist-${suffix}`);
+    const itemDuration = wireDurationToggle(
+      `item-random-toggle-${suffix}`, `item-duration-${suffix}`,
+      `item-duration-min-${suffix}`, `item-duration-sep-${suffix}`, `item-duration-max-${suffix}`,
+    );
+    const gapDuration = wireDurationToggle(
+      `gap-random-toggle-${suffix}`, `gap-duration-${suffix}`,
+      `gap-duration-min-${suffix}`, `gap-duration-sep-${suffix}`, `gap-duration-max-${suffix}`,
+    );
+
+    const queueEl = $(`playlist-queue-${suffix}`);
+    const playPauseBtn = $(`playlist-playpause-${suffix}`);
+    const playPauseIcon = $(`playlist-playpause-icon-${suffix}`);
+    const shuffleBtn = $(`playlist-shuffle-${suffix}`);
+    const loopBtn = $(`playlist-loop-${suffix}`);
+    const summaryEl = $(`playlist-summary-${suffix}`);
+
+    $(`add-item-${suffix}`).addEventListener('click', () => {
+      const chosen = picker.getSelected();
+      if (!chosen) { showToast('presets not loaded yet'); return; }
+      // Send the preset's id, not its resolved waveform -- the server
+      // resolves it lazily (same as a bare custom string would pass
+      // through unresolved), which is also what lets the queue show the
+      // preset's real name instead of a raw-data preview.
+      postJson(`${base}/items`, { kind: 'pulse', waveform: chosen.id, duration: itemDuration.getSpec() });
+    });
+
+    $(`add-gap-${suffix}`).addEventListener('click', () => {
+      postJson(`${base}/items`, { kind: 'gap', duration: gapDuration.getSpec() });
+    });
+
+    playPauseBtn.addEventListener('click', () => {
+      postJson(`${base}/${playPauseBtn.dataset.action || 'play'}`);
+    });
+    $(`playlist-stop-${suffix}`).addEventListener('click', () => postJson(`${base}/stop`));
+
+    shuffleBtn.addEventListener('click', () => {
+      postJson(`${base}/settings`, {
+        shuffle: !shuffleBtn.classList.contains('active'),
+        loopPlayback: loopBtn.classList.contains('active'),
+      });
+    });
+    loopBtn.addEventListener('click', () => {
+      postJson(`${base}/settings`, {
+        shuffle: shuffleBtn.classList.contains('active'),
+        loopPlayback: !loopBtn.classList.contains('active'),
+      });
+    });
+
+    // -- drag-to-reorder: native HTML5 DnD. On drop, the full new id
+    // order is computed from the DOM and POSTed in one shot -- there's no
+    // live-reordering animation while dragging, just the `.dragging`
+    // opacity, kept deliberately simple for a first version.
+    let dragId = null;
+    function wireDrag(el, id) {
+      el.draggable = true;
+      el.addEventListener('dragstart', () => { dragId = id; el.classList.add('dragging'); });
+      el.addEventListener('dragend', () => { el.classList.remove('dragging'); dragId = null; });
+      el.addEventListener('dragover', (e) => e.preventDefault());
+      el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        if (!dragId || dragId === id) return;
+        const order = Array.from(queueEl.children).map((c) => c.dataset.id).filter(Boolean).filter((x) => x !== dragId);
+        order.splice(order.indexOf(id), 0, dragId);
+        postJson(`${base}/reorder`, { order });
+      });
+    }
+
+    function removeBtn(entryId) {
+      const btn = document.createElement('button');
+      btn.className = 'item-remove';
+      btn.innerHTML = REMOVE_ICON_SVG;
+      btn.addEventListener('click', () => deleteJson(`${base}/items/${entryId}`));
+      return btn;
+    }
+
+    function renderItemRow(entry, isCurrent, playlist) {
+      const row = document.createElement('div');
+      row.className = 'playlist-item' + (isCurrent ? ' playing' : '');
+      row.dataset.id = entry.id;
+      if (isCurrent && playlist.remainingMs != null && playlist.currentDurationMs) {
+        const bar = document.createElement('div');
+        bar.className = 'playing-progress';
+        const pct = 100 - Math.max(0, Math.min(100, (playlist.remainingMs / playlist.currentDurationMs) * 100));
+        bar.style.width = `${pct}%`;
+        row.appendChild(bar);
+      }
+      row.appendChild(svgFragment(DRAG_HANDLE_SVG));
+      const spark = document.createElementNS(SVG_NS, 'svg');
+      spark.setAttribute('class', 'item-spark');
+      spark.setAttribute('viewBox', '0 0 44 16');
+      spark.setAttribute('preserveAspectRatio', 'none');
+      if (entry.waveformResolved) spark.innerHTML = sparklineMarkup(entry.waveformResolved);
+      row.appendChild(spark);
+      const name = document.createElement('span');
+      name.className = 'item-name';
+      name.textContent = entry.label;
+      row.appendChild(name);
+      if (isCurrent) {
+        const tag = document.createElement('span');
+        tag.className = 'playing-tag';
+        tag.textContent = 'playing';
+        row.appendChild(tag);
+      }
+      const dur = document.createElement('span');
+      dur.className = 'item-duration mono';
+      if (entry.duration.mode === 'random') dur.appendChild(svgFragment(DICE_ICON_SVG));
+      const durText = document.createElement('span');
+      durText.textContent = isCurrent && playlist.remainingMs != null && playlist.currentDurationMs
+        ? `${Math.ceil(playlist.remainingMs / 1000)} / ${Math.ceil(playlist.currentDurationMs / 1000)}s`
+        : durationLabel(entry.duration);
+      dur.appendChild(durText);
+      row.appendChild(dur);
+      row.appendChild(removeBtn(entry.id));
+      wireDrag(row, entry.id);
+      return row;
+    }
+
+    function renderGapRow(entry, isCurrent, playlist) {
+      const row = document.createElement('div');
+      row.className = 'playlist-gap';
+      row.dataset.id = entry.id;
+      row.appendChild(svgFragment(DRAG_HANDLE_SVG));
+      row.appendChild(svgFragment(GAP_ICON_SVG));
+      const label = document.createElement('span');
+      label.className = 'gap-label';
+      label.textContent = 'Silent gap';
+      row.appendChild(label);
+      if (isCurrent && playlist.remainingMs != null && playlist.currentDurationMs) {
+        const time = document.createElement('span');
+        time.className = 'gap-time mono';
+        time.textContent = `${Math.ceil(playlist.remainingMs / 1000)}s left`;
+        row.appendChild(time);
+        const track = document.createElement('div');
+        track.className = 'gap-progress-track';
+        const fill = document.createElement('div');
+        fill.className = 'gap-progress-fill';
+        const pct = 100 - Math.max(0, Math.min(100, (playlist.remainingMs / playlist.currentDurationMs) * 100));
+        fill.style.width = `${pct}%`;
+        track.appendChild(fill);
+        row.appendChild(track);
+      } else {
+        const dur = document.createElement('span');
+        dur.className = 'gap-duration mono';
+        if (entry.duration.mode === 'random') dur.appendChild(svgFragment(DICE_ICON_SVG));
+        const durText = document.createElement('span');
+        durText.textContent = durationLabel(entry.duration);
+        dur.appendChild(durText);
+        row.appendChild(dur);
+      }
+      row.appendChild(removeBtn(entry.id));
+      wireDrag(row, entry.id);
+      return row;
+    }
+
+    function renderQueue(playlist) {
+      queueEl.innerHTML = '';
+      if (!playlist.entries.length) {
+        const empty = document.createElement('div');
+        empty.className = 'playlist-empty';
+        empty.textContent = 'No items yet — add a preset or a gap above.';
+        queueEl.appendChild(empty);
+        return;
+      }
+      const isPlaying = playlist.phase === 'playing';
+      for (const entry of playlist.entries) {
+        const isCurrent = isPlaying && entry.id === playlist.currentId;
+        queueEl.appendChild(
+          entry.kind === 'gap' ? renderGapRow(entry, isCurrent, playlist) : renderItemRow(entry, isCurrent, playlist),
+        );
+      }
+    }
+
+    function renderControls(playlist) {
+      const playing = playlist.phase === 'playing';
+      playPauseIcon.innerHTML = playing ? PAUSE_ICON_SVG : PLAY_ICON_SVG;
+      playPauseBtn.title = playing ? 'Pause' : 'Play';
+      playPauseBtn.dataset.action = playing ? 'pause' : 'play';
+      shuffleBtn.classList.toggle('active', playlist.shuffle);
+      loopBtn.classList.toggle('active', playlist.loopPlayback);
+
+      const total = playlist.entries.length;
+      const current = playing ? playlist.entries.find((e) => e.id === playlist.currentId) : null;
+      if (!total) {
+        summaryEl.textContent = 'No items yet';
+      } else if (current) {
+        const index = playlist.entries.findIndex((e) => e.id === playlist.currentId) + 1;
+        const remaining = playlist.remainingMs != null ? Math.ceil(playlist.remainingMs / 1000) : 0;
+        summaryEl.textContent = current.kind === 'gap'
+          ? `Silent gap · resumes in ${remaining}s`
+          : `Item ${index} of ${total} · ${remaining}s left`;
+      } else if (playlist.phase === 'paused') {
+        summaryEl.textContent = 'Paused';
+      } else {
+        const upTo = playlist.entries.reduce(
+          (sum, e) => sum + (e.duration.mode === 'random' ? e.duration.max : e.duration.seconds), 0,
+        );
+        summaryEl.textContent = `${total} item${total === 1 ? '' : 's'} · up to ${upTo}s total`;
+      }
+    }
+
+    return {
+      populate: picker.populate,
+      render(playlist) {
+        renderQueue(playlist);
+        renderControls(playlist);
+      },
+    };
+  }
+
+  const playlistA = makePlaylistController('a');
+  const playlistB = makePlaylistController('b');
+
+  fetch('/api/presets').then((r) => r.json()).then((presets) => {
+    presetPickerA.populate(presets);
+    presetPickerB.populate(presets);
+    playlistA.populate(presets);
+    playlistB.populate(presets);
+  });
 })();

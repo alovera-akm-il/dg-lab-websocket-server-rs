@@ -23,13 +23,16 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
+use axum::http::StatusCode;
 use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 use crate::v3::protocol::Channel;
 
+use super::playlist::{self, PlaylistQueue, PlaylistSnapshot};
 use super::webhook;
 
 const LOG_CAPACITY: usize = 200;
@@ -120,6 +123,14 @@ struct Inner {
     webhook_url: Option<String>,
 
     log: VecDeque<String>,
+
+    /// Per-channel pulse playlists -- queue contents/settings and
+    /// playback position, guarded by this same lock like everything else
+    /// above. See [`playlist`] for the state machine itself; playback's
+    /// cancellation tokens live outside `Inner` (see `playlist_token_a`/
+    /// `_b` below), mirroring `reconnect`/`v4_reconnect`.
+    playlist_a: PlaylistQueue,
+    playlist_b: PlaylistQueue,
 }
 
 pub struct Snapshot {
@@ -141,6 +152,8 @@ pub struct Snapshot {
     pub limit_b: Option<i64>,
     pub webhook_url: Option<String>,
     pub log: Vec<String>,
+    pub playlist_a: PlaylistSnapshot,
+    pub playlist_b: PlaylistSnapshot,
 }
 
 pub struct PanelState {
@@ -150,6 +163,13 @@ pub struct PanelState {
     changed: broadcast::Sender<()>,
     reconnect: Mutex<CancellationToken>,
     v4_reconnect: Mutex<CancellationToken>,
+    /// Cancelling one of these interrupts that channel's playlist runner
+    /// task, if one is currently alive (which is exactly when that
+    /// channel's playlist is `Playing` -- see the `playlist_*` methods
+    /// below). A fresh token is issued every time playback (re)starts,
+    /// same pattern as `reconnect`/`v4_reconnect`.
+    playlist_token_a: Mutex<CancellationToken>,
+    playlist_token_b: Mutex<CancellationToken>,
 }
 
 impl PanelState {
@@ -177,10 +197,14 @@ impl PanelState {
                 limit_b: None,
                 webhook_url: None,
                 log: VecDeque::new(),
+                playlist_a: PlaylistQueue::new(),
+                playlist_b: PlaylistQueue::new(),
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
             v4_reconnect: Mutex::new(CancellationToken::new()),
+            playlist_token_a: Mutex::new(CancellationToken::new()),
+            playlist_token_b: Mutex::new(CancellationToken::new()),
         }
     }
 
@@ -209,6 +233,8 @@ impl PanelState {
             limit_b: inner.limit_b,
             webhook_url: inner.webhook_url.clone(),
             log: inner.log.iter().cloned().collect(),
+            playlist_a: inner.playlist_a.snapshot(),
+            playlist_b: inner.playlist_b.snapshot(),
         }
     }
 
@@ -584,6 +610,168 @@ impl PanelState {
             }
         }
         self.notify_changed();
+    }
+
+    /// Resolves which leg is currently active and its live outbound
+    /// sender together, since every command endpoint (and the playlist
+    /// runner, which isn't itself an HTTP handler and so has only this
+    /// `PanelState` to work with) needs both -- `409` if no device is
+    /// paired on either leg, `503` if that leg's relay connection isn't
+    /// currently ready to send. Kept as a small `(status, message)` error
+    /// rather than a built `Response` so this `Result` stays cheap to
+    /// pass around (clippy's `result_large_err`), and so this module
+    /// doesn't need to depend on `axum::response`.
+    pub fn active_target_and_outbound(
+        &self,
+    ) -> Result<(ActiveTarget, mpsc::UnboundedSender<WsMessage>), (StatusCode, &'static str)> {
+        let Some(target) = self.active_target() else {
+            return Err((StatusCode::CONFLICT, "no device paired"));
+        };
+        let tx = match &target {
+            ActiveTarget::V3 { .. } => self.outbound(),
+            ActiveTarget::V4 { .. } => self.v4_outbound(),
+        };
+        match tx {
+            Some(tx) => Ok((target, tx)),
+            None => Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "relay connection not ready",
+            )),
+        }
+    }
+
+    // ---- playlists ------------------------------------------------------
+
+    fn playlist_token_mutex(&self, channel: Channel) -> &Mutex<CancellationToken> {
+        match channel {
+            Channel::A => &self.playlist_token_a,
+            Channel::B => &self.playlist_token_b,
+        }
+    }
+
+    /// Cancels and reissues `channel`'s playlist token, returning the
+    /// fresh one for the caller to spawn a new runner task with. Safe to
+    /// call even if no task is currently alive (matches
+    /// `request_reconnect`'s pattern).
+    fn reset_playlist_token(&self, channel: Channel) -> CancellationToken {
+        let mut guard = self.playlist_token_mutex(channel).lock().unwrap();
+        guard.cancel();
+        *guard = CancellationToken::new();
+        guard.clone()
+    }
+
+    /// Wakes (and lets exit) whatever runner task is currently alive for
+    /// `channel`, if any -- harmless to call when none is.
+    fn cancel_playlist_token(&self, channel: Channel) {
+        self.playlist_token_mutex(channel).lock().unwrap().cancel();
+    }
+
+    pub fn playlist_add(
+        &self,
+        channel: Channel,
+        kind: playlist::EntryKind,
+        duration: playlist::DurationSpec,
+    ) -> Uuid {
+        let id = {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).add(kind, duration)
+        };
+        self.notify_changed();
+        id
+    }
+
+    pub fn playlist_remove(&self, channel: Channel, id: Uuid) -> bool {
+        let removed = {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).remove(id)
+        };
+        self.notify_changed();
+        removed
+    }
+
+    pub fn playlist_reorder(&self, channel: Channel, order: &[Uuid]) -> bool {
+        let ok = {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).reorder(order)
+        };
+        self.notify_changed();
+        ok
+    }
+
+    pub fn playlist_set_settings(&self, channel: Channel, shuffle: bool, loop_playback: bool) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).set_settings(shuffle, loop_playback);
+        }
+        self.notify_changed();
+    }
+
+    /// Starts or resumes playback of `channel`'s playlist, and -- only
+    /// when that succeeds -- issues a fresh cancellation token for the
+    /// caller to spawn the runner task with (see
+    /// `playlist_runner::run`). The caller is responsible for actually
+    /// spawning that task; this method only decides *whether* one should
+    /// run and what its first step is.
+    pub fn playlist_play(
+        &self,
+        channel: Channel,
+    ) -> Result<(playlist::Step, CancellationToken), playlist::PlayError> {
+        let step = {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).play()
+        }?;
+        let token = self.reset_playlist_token(channel);
+        self.notify_changed();
+        Ok((step, token))
+    }
+
+    /// Called by the runner once its current entry's resolved duration
+    /// elapses naturally (never as a result of pause/stop cancelling the
+    /// token -- those mutate state directly, see below).
+    pub fn playlist_advance(&self, channel: Channel) -> playlist::Step {
+        let step = {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).advance()
+        };
+        self.notify_changed();
+        step
+    }
+
+    /// Pauses `channel`'s playlist (capturing time left on the current
+    /// entry) and interrupts its runner task. No-op if not currently
+    /// playing. Returns whether it actually did anything.
+    pub fn playlist_pause(&self, channel: Channel) -> bool {
+        let paused = {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).pause()
+        };
+        if paused {
+            self.cancel_playlist_token(channel);
+        }
+        self.notify_changed();
+        paused
+    }
+
+    /// Stops `channel`'s playlist (resetting to the top of the queue) and
+    /// interrupts its runner task. Always succeeds, including when
+    /// already stopped.
+    pub fn playlist_stop(&self, channel: Channel) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).stop();
+        }
+        self.cancel_playlist_token(channel);
+        self.notify_changed();
+    }
+}
+
+/// Picks the `Inner` field for `channel`'s playlist -- a free function
+/// (rather than a method) so it can be called while `inner` is already
+/// locked, same reasoning as `activate`/`deactivate_if_active` below.
+fn playlist_mut(inner: &mut Inner, channel: Channel) -> &mut PlaylistQueue {
+    match channel {
+        Channel::A => &mut inner.playlist_a,
+        Channel::B => &mut inner.playlist_b,
     }
 }
 

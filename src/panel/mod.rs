@@ -17,6 +17,8 @@ pub mod commands;
 pub mod config;
 pub mod handler;
 pub mod network;
+pub mod playlist;
+pub mod playlist_runner;
 pub mod presets;
 pub mod qrcode;
 pub mod relay_client;

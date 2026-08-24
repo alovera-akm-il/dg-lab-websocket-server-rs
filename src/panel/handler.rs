@@ -11,7 +11,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use futures_util::StreamExt;
 use futures_util::stream::{self, Stream};
@@ -19,10 +19,13 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
+use uuid::Uuid;
 
 use super::config::Config;
 use super::state::{ActiveTarget, PanelState, Snapshot};
-use super::{assets, commands, network, presets, qrcode, v4_commands, webhook};
+use super::{
+    assets, commands, network, playlist, playlist_runner, presets, qrcode, v4_commands, webhook,
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -50,6 +53,22 @@ pub fn router(state: AppState) -> Router {
         .route("/api/limit", post(post_limit))
         .route("/api/webhook", post(post_webhook))
         .route("/api/reconnect", post(post_reconnect))
+        .route("/api/playlist/{channel}/items", post(post_playlist_item))
+        .route(
+            "/api/playlist/{channel}/items/{id}",
+            delete(delete_playlist_item),
+        )
+        .route(
+            "/api/playlist/{channel}/reorder",
+            post(post_playlist_reorder),
+        )
+        .route(
+            "/api/playlist/{channel}/settings",
+            post(post_playlist_settings),
+        )
+        .route("/api/playlist/{channel}/play", post(post_playlist_play))
+        .route("/api/playlist/{channel}/pause", post(post_playlist_pause))
+        .route("/api/playlist/{channel}/stop", post(post_playlist_stop))
         .with_state(state)
 }
 
@@ -170,6 +189,64 @@ fn snapshot_json(
         "pairUrl": pair_url,
         "qrSvgV4": qr_svg_v4,
         "pairUrlV4": pair_url_v4,
+        "playlistA": playlist_json(&snapshot.playlist_a),
+        "playlistB": playlist_json(&snapshot.playlist_b),
+    })
+}
+
+fn playlist_entry_json(entry: &playlist::PlaylistEntry) -> Value {
+    // `waveform` is stored as either a preset id or a raw custom string --
+    // whichever the operator's request named (see `post_playlist_item`) --
+    // and only resolved to actual frame data lazily, same as `POST
+    // /api/pulse` already does. That raw form is what a preset id needs to
+    // resolve a nice `label`, but it isn't itself frame data a sparkline
+    // can be drawn from, so `waveformResolved` is included separately for
+    // the UI to render a preview from without duplicating the resolution
+    // logic client-side.
+    let (kind, label, waveform, waveform_resolved) = match &entry.kind {
+        playlist::EntryKind::Pulse { waveform } => {
+            let preset = presets::find(waveform);
+            let label = preset.map(|p| p.label_en.to_string()).unwrap_or_else(|| {
+                let preview: String = waveform.chars().take(24).collect();
+                if waveform.chars().count() > 24 {
+                    format!("{preview}…")
+                } else {
+                    preview
+                }
+            });
+            let resolved = preset
+                .map(|p| p.waveform_string())
+                .unwrap_or_else(|| waveform.clone());
+            ("pulse", label, Some(waveform.clone()), Some(resolved))
+        }
+        playlist::EntryKind::Gap => ("gap", "Silent gap".to_string(), None, None),
+    };
+    let duration = match entry.duration {
+        playlist::DurationSpec::Fixed(seconds) => json!({"mode": "fixed", "seconds": seconds}),
+        playlist::DurationSpec::Random { min, max } => {
+            json!({"mode": "random", "min": min, "max": max})
+        }
+    };
+    json!({
+        "id": entry.id.to_string(),
+        "kind": kind,
+        "label": label,
+        "waveform": waveform,
+        "waveformResolved": waveform_resolved,
+        "duration": duration,
+    })
+}
+
+fn playlist_json(snapshot: &playlist::PlaylistSnapshot) -> Value {
+    json!({
+        "entries": snapshot.entries.iter().map(playlist_entry_json).collect::<Vec<_>>(),
+        "shuffle": snapshot.shuffle,
+        "loopPlayback": snapshot.loop_playback,
+        "phase": snapshot.phase.as_str(),
+        "currentId": snapshot.current_id.map(|id| id.to_string()),
+        "remainingMs": snapshot.remaining_ms,
+        "currentDurationMs": snapshot.current_duration_ms,
+        "totalEntries": snapshot.entries.len(),
     })
 }
 
@@ -314,7 +391,7 @@ async fn post_strength(State(state): State<AppState>, Json(body): Json<StrengthB
         );
     }
 
-    let (target, tx) = match active_target_and_outbound(&state) {
+    let (target, tx) = match state.panel.active_target_and_outbound() {
         Ok(pair) => pair,
         Err((status, message)) => return error_response(status, message),
     };
@@ -406,7 +483,7 @@ async fn post_clear(State(state): State<AppState>, Json(body): Json<ClearBody>) 
     let Some(channel) = commands::parse_channel(&body.channel) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid channel");
     };
-    let (target, tx) = match active_target_and_outbound(&state) {
+    let (target, tx) = match state.panel.active_target_and_outbound() {
         Ok(pair) => pair,
         Err((status, message)) => return error_response(status, message),
     };
@@ -442,7 +519,7 @@ async fn post_pulse(State(state): State<AppState>, Json(body): Json<PulseBody>) 
         .map(|p| p.waveform_string())
         .unwrap_or_else(|| body.waveform.clone());
 
-    let (target, tx) = match active_target_and_outbound(&state) {
+    let (target, tx) = match state.panel.active_target_and_outbound() {
         Ok(pair) => pair,
         Err((status, message)) => return error_response(status, message),
     };
@@ -475,29 +552,209 @@ async fn post_reconnect(State(state): State<AppState>) -> Response {
     StatusCode::OK.into_response()
 }
 
-/// Resolves which leg is currently active and its live outbound sender
-/// together, since every command endpoint needs both -- `409` if no
-/// device is paired on either leg, `503` if that leg's relay connection
-/// isn't currently ready to send. Kept as a small `(status, message)`
-/// error rather than a built `Response` so this `Result` stays cheap to
-/// pass around (clippy's `result_large_err`).
-fn active_target_and_outbound(
-    state: &AppState,
-) -> Result<(ActiveTarget, mpsc::UnboundedSender<WsMessage>), (StatusCode, &'static str)> {
-    let Some(target) = state.panel.active_target() else {
-        return Err((StatusCode::CONFLICT, "no device paired"));
-    };
-    let tx = match &target {
-        ActiveTarget::V3 { .. } => state.panel.outbound(),
-        ActiveTarget::V4 { .. } => state.panel.v4_outbound(),
-    };
-    match tx {
-        Some(tx) => Ok((target, tx)),
-        None => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            "relay connection not ready",
-        )),
+// ---- playlists --------------------------------------------------------
+
+#[derive(Deserialize)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+enum DurationBody {
+    Fixed { seconds: u32 },
+    Random { min: u32, max: u32 },
+}
+
+impl DurationBody {
+    fn into_spec(self) -> Result<playlist::DurationSpec, &'static str> {
+        match self {
+            DurationBody::Fixed { seconds } => {
+                if seconds == 0 {
+                    return Err("duration seconds must be at least 1");
+                }
+                Ok(playlist::DurationSpec::Fixed(seconds))
+            }
+            DurationBody::Random { min, max } => {
+                if min == 0 || max == 0 {
+                    return Err("duration seconds must be at least 1");
+                }
+                if min > max {
+                    return Err("duration min must not exceed max");
+                }
+                Ok(playlist::DurationSpec::Random { min, max })
+            }
+        }
     }
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum AddEntryBody {
+    Pulse {
+        waveform: String,
+        duration: DurationBody,
+    },
+    Gap {
+        duration: DurationBody,
+    },
+}
+
+async fn post_playlist_item(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    Json(body): Json<AddEntryBody>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    let (kind, duration_body) = match body {
+        AddEntryBody::Pulse { waveform, duration } => {
+            if waveform.trim().is_empty() {
+                return error_response(StatusCode::BAD_REQUEST, "waveform must not be empty");
+            }
+            (playlist::EntryKind::Pulse { waveform }, duration)
+        }
+        AddEntryBody::Gap { duration } => (playlist::EntryKind::Gap, duration),
+    };
+    let duration = match duration_body.into_spec() {
+        Ok(d) => d,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, message),
+    };
+
+    let id = state.panel.playlist_add(channel, kind, duration);
+    state.panel.log(format!(
+        "Playlist channel {}: added an entry",
+        commands::channel_str(channel)
+    ));
+    Json(json!({"id": id.to_string()})).into_response()
+}
+
+async fn delete_playlist_item(
+    State(state): State<AppState>,
+    Path((channel, id)): Path<(String, String)>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    let Ok(id) = Uuid::parse_str(&id) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid entry id");
+    };
+    if state.panel.playlist_remove(channel, id) {
+        state.panel.log(format!(
+            "Playlist channel {}: removed an entry",
+            commands::channel_str(channel)
+        ));
+        StatusCode::OK.into_response()
+    } else {
+        error_response(StatusCode::NOT_FOUND, "no such entry")
+    }
+}
+
+#[derive(Deserialize)]
+struct ReorderBody {
+    order: Vec<String>,
+}
+
+async fn post_playlist_reorder(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    Json(body): Json<ReorderBody>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    let mut ids = Vec::with_capacity(body.order.len());
+    for raw in &body.order {
+        match Uuid::parse_str(raw) {
+            Ok(id) => ids.push(id),
+            Err(_) => return error_response(StatusCode::BAD_REQUEST, "invalid entry id in order"),
+        }
+    }
+    if state.panel.playlist_reorder(channel, &ids) {
+        StatusCode::OK.into_response()
+    } else {
+        error_response(
+            StatusCode::BAD_REQUEST,
+            "order must name every current entry exactly once",
+        )
+    }
+}
+
+#[derive(Deserialize)]
+struct PlaylistSettingsBody {
+    shuffle: bool,
+    #[serde(rename = "loopPlayback")]
+    loop_playback: bool,
+}
+
+async fn post_playlist_settings(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    Json(body): Json<PlaylistSettingsBody>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    state
+        .panel
+        .playlist_set_settings(channel, body.shuffle, body.loop_playback);
+    StatusCode::OK.into_response()
+}
+
+async fn post_playlist_play(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    match state.panel.playlist_play(channel) {
+        Ok((step, token)) => {
+            tokio::spawn(playlist_runner::run(
+                state.panel.clone(),
+                channel,
+                token,
+                step,
+            ));
+            state.panel.log(format!(
+                "Playlist channel {}: playback started",
+                commands::channel_str(channel)
+            ));
+            StatusCode::OK.into_response()
+        }
+        Err(playlist::PlayError::Empty) => {
+            error_response(StatusCode::CONFLICT, "playlist is empty")
+        }
+        // Already playing -- idempotent no-op, not an error.
+        Err(playlist::PlayError::AlreadyPlaying) => StatusCode::OK.into_response(),
+    }
+}
+
+async fn post_playlist_pause(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    if state.panel.playlist_pause(channel) {
+        state.panel.log(format!(
+            "Playlist channel {}: paused",
+            commands::channel_str(channel)
+        ));
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn post_playlist_stop(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    state.panel.playlist_stop(channel);
+    state.panel.log(format!(
+        "Playlist channel {}: stopped",
+        commands::channel_str(channel)
+    ));
+    StatusCode::OK.into_response()
 }
 
 fn send_frame(state: &AppState, tx: &mpsc::UnboundedSender<WsMessage>, frame: Value) -> Response {
