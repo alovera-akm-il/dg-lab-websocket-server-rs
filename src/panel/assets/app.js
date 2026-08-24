@@ -328,6 +328,8 @@
     logCountEl.textContent = `${log.length} events`;
     if (wasAtBottom) logEl.scrollTop = logEl.scrollHeight;
 
+    modeToggleA.autoSelect(state.playlistA);
+    modeToggleB.autoSelect(state.playlistB);
     playlistA.render(state.playlistA);
     playlistB.render(state.playlistB);
   }
@@ -553,21 +555,47 @@
   wirePulseChannel('b', 'B');
 
   // -- Single/Playlist mode switch ----------------------------------------
+  //
+  // Which tab is showing is pure client-side UI state -- the server has
+  // no notion of it, by design (both a channel's single-shot controls and
+  // its playlist are always live regardless of which one is on screen).
+  // Left alone, that means a fresh tab always opens on "Single" even
+  // while a playlist is actively running -- indistinguishable from the
+  // queue having vanished. So until the operator explicitly picks a tab
+  // on *this* page load, `autoSelect` keeps it pointed at whichever one
+  // reflects what's actually happening, e.g. so a second tab opened
+  // while channel A's playlist is running shows it immediately instead
+  // of defaulting to the (empty-looking) Single tab.
 
   function wireModeToggle(suffix) {
     const toggle = $(`mode-toggle-${suffix}`);
     const singleEl = $(`single-mode-${suffix}`);
     const playlistEl = $(`playlist-mode-${suffix}`);
+    let userPicked = false;
+
+    function setMode(mode) {
+      toggle.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
+      singleEl.hidden = mode !== 'single';
+      playlistEl.hidden = mode !== 'playlist';
+    }
+
     toggle.querySelectorAll('.mode-btn').forEach((btn) => {
       btn.addEventListener('click', () => {
-        toggle.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b === btn));
-        singleEl.hidden = btn.dataset.mode !== 'single';
-        playlistEl.hidden = btn.dataset.mode !== 'playlist';
+        userPicked = true;
+        setMode(btn.dataset.mode);
       });
     });
+
+    return {
+      autoSelect(playlist) {
+        if (userPicked) return;
+        const hasActivity = playlist.entries.length > 0 || playlist.phase !== 'stopped';
+        setMode(hasActivity ? 'playlist' : 'single');
+      },
+    };
   }
-  wireModeToggle('a');
-  wireModeToggle('b');
+  const modeToggleA = wireModeToggle('a');
+  const modeToggleB = wireModeToggle('b');
 
   // -- pulse playlists ------------------------------------------------------
   //
