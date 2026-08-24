@@ -418,6 +418,11 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/playlist/{channel}/play` | Start (or resume) playback |
 | `POST` | `/api/playlist/{channel}/pause` | Pause playback, keeping position |
 | `POST` | `/api/playlist/{channel}/stop` | Stop and reset to the start of the queue |
+| `POST` | `/api/playlist/{channel}/load-template` | Replace a channel's queue with a saved template |
+| `GET` | `/api/templates` | List saved template names |
+| `GET` | `/api/templates/{name}` | Get one template by name |
+| `POST` | `/api/templates/{name}` | Save a channel's current queue as a template |
+| `DELETE` | `/api/templates/{name}` | Remove a template |
 
 ### `GET /events` (SSE)
 
@@ -707,6 +712,88 @@ from the top. Always `200 OK`, including if already paused or stopped.
 
 No body. Stops playback and resets position to the start of the queue (the
 next `play` starts from the first entry, unlike `pause`). Always `200 OK`.
+
+### Templates
+
+Named, reusable playlist definitions (`src/panel/templates.rs`) — build a
+channel's queue once, save it under a name, then load it into either
+channel later without rebuilding it by hand. Unlike every other piece of
+panel state, templates survive a process restart: they're stored as one
+JSON file (`templates.json` under `PANEL_DATA_DIR`, default `panel-data`)
+rather than only in memory.
+
+A template's `items` deliberately don't carry entry ids — an id is
+queue-local identity assigned fresh by whichever queue loads the template,
+not portable data, so loading the same template twice (or into both
+channels) never produces colliding ids:
+
+```json
+{
+  "name": "edge-test",
+  "items": [
+    {"kind": "pulse", "waveform": "coyote-extrusion", "duration": {"mode": "fixed", "seconds": 20}},
+    {"kind": "gap", "duration": {"mode": "random", "min": 8, "max": 15}}
+  ],
+  "settings": {"shuffle": false, "loopPlayback": true}
+}
+```
+
+This is exactly the shape `GET /api/templates/{name}` returns, and what
+`POST /api/templates/{name}` builds internally from a channel's live
+queue — `items[].duration` uses the same `{"mode":"fixed",...}` /
+`{"mode":"random",...}` shapes as `POST /api/playlist/{channel}/items`,
+validated the same way (`400` for a `0`-second duration or `min > max`) at
+load time, since a hand-edited `templates.json` can name an invalid one
+even though anything saved through the API can't.
+
+#### `GET /api/templates`
+
+```json
+["edge-test", "warmup-steady"]
+```
+
+Template names only, sorted alphabetically — fetch `GET
+/api/templates/{name}` for one template's full contents.
+
+#### `GET /api/templates/{name}`
+
+Returns the template shape above. `404` if no template with that name
+exists.
+
+#### `POST /api/templates/{name}`
+
+```json
+{"sourceChannel": "A" | "B"}
+```
+
+Saves that channel's *current* queue (contents plus its shuffle/loop
+settings) under `{name}`, overwriting any existing template with the same
+name — there's no separate rename/update endpoint, saving under an
+existing name is how you update it. `200` with `{"name": "..."}` on
+success; `400` for an empty name or an invalid `sourceChannel`.
+
+#### `DELETE /api/templates/{name}`
+
+No body. `200` on success, `404` if no template with that name exists.
+
+#### `POST /api/playlist/{channel}/load-template`
+
+```json
+{"name": "edge-test", "shuffle": false}
+```
+
+Replaces `{channel}`'s entire queue with the named template's items,
+stopping any playback in progress first (loading is a destructive
+replace, not a merge or an append — a live runner task can't be left
+holding an entry id from a queue that no longer exists). `loopPlayback`
+comes from the template itself; `shuffle` is the one setting the load
+request overrides independently of what the template was saved with,
+since there's a real use case for wanting a different shuffle setting on
+a given night without needing a second copy of the same template just to
+flip it (`loopPlayback` has no equivalent per-load override — see
+`docs/dg-lab-panel-feature-requests.md`'s Templates section for why).
+`404` if `name` doesn't match a saved template; `400` if the template's
+stored data is invalid (see above).
 
 ---
 

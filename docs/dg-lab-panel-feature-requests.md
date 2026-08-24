@@ -45,6 +45,11 @@ independent of the other five.
 
 ## 1. Named Playlist Templates
 
+**Status: implemented.** `src/panel/templates.rs` + `src/panel/persistence.rs`;
+endpoints and JSON shapes below match what shipped, including the
+query-params-to-JSON-body revision — see `docs/api.md`'s "Templates"
+section for the final reference.
+
 Saveable, reusable playlist definitions. Define a playlist once, give it a name, then load it into either channel with one call.
 
 ### API
