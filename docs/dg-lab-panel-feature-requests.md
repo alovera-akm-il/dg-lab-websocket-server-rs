@@ -135,6 +135,11 @@ buttons.
 
 ## 2. Strength Ramp Profiles
 
+**Status: implemented.** `src/panel/ramp.rs` + `src/panel/ramp_runner.rs`;
+the design below (1-second tick, peak-value limit check, per-step
+random-walk clamping, no pause/resume) matches what shipped — see
+`docs/api.md`'s "Ramps" section for the final endpoint/SSE reference.
+
 Programmatic curves that adjust strength over time without sending individual `/api/strength` calls. The panel runs the schedule internally.
 
 ### API

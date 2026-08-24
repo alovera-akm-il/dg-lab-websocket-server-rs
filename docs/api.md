@@ -409,6 +409,8 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/clear` | Clear a channel (cancels any in-flight pulse) |
 | `POST` | `/api/pulse` | Send a pulse waveform |
 | `POST` | `/api/limit` | Set/clear a channel's operator upper limit |
+| `POST` | `/api/ramp` | Start (or replace) a strength ramp on a channel |
+| `POST` | `/api/ramp/stop` | Stop a channel's active ramp |
 | `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
 | `POST` | `/api/reconnect` | Force a fresh relay connection (new controller id/QR) |
 | `POST` | `/api/playlist/{channel}/items` | Add a pulse or gap entry to that channel's playlist |
@@ -589,6 +591,88 @@ only ever visible read-only, as `softLimitA`/`softLimitB` in `/events`.
 `value: null` (or omitted) clears the limit. `400` if `value` is negative.
 Survives the panel's own relay reconnects (it's operator configuration, not
 device state).
+
+### Ramps
+
+A strength ramp is a curve the panel drives on a fixed 1-second tick,
+sending a `Set` command (the same one `POST /api/strength`'s `op: "set"`
+sends) each time the computed value actually changes, rather than the
+operator sending individual commands — `src/panel/ramp.rs`/
+`src/panel/ramp_runner.rs`. Neither wire protocol has a smooth-curve
+primitive, so this is genuinely what "ramping" means here: a value
+recomputed once a second, not a continuous device-side effect. There's no
+pause/resume, only start/stop — a manual `POST /api/strength` on that
+channel cancels its active ramp outright (see below).
+
+Three profiles, chosen by the body's `profile` field:
+
+```json
+// linear -- interpolates from `from` to `to` over `overSeconds`, then ends
+{"channel": "A", "profile": "linear", "from": 10, "to": 40, "overSeconds": 600}
+
+// random-walk -- wanders within `base` +/- `variance`, re-rolling every
+// `stepSeconds`, for a total of `durationSeconds`
+{"channel": "B", "profile": "random-walk", "base": 30, "variance": 15, "stepSeconds": 30, "durationSeconds": 600}
+
+// hold -- holds `value` steady for `durationSeconds` (a Set that stays
+// "active" -- shown in /events, blocks a manual override the same way
+// the other profiles do -- rather than ending immediately)
+{"channel": "A", "profile": "hold", "value": 25, "durationSeconds": 300}
+```
+
+#### `POST /api/ramp`
+
+Starts a ramp on `channel`, replacing any ramp already running there
+(starting a new one always wins — there's no separate "already ramping"
+conflict response). `400` if any of the profile's own numbers are invalid
+(`overSeconds`/`stepSeconds`/`durationSeconds` must be at least 1;
+`variance` must not be negative), or if — `linear`/`hold` only — the
+profile's peak value (`max(from, to)` for `linear`, `value` for `hold`)
+would exceed the channel's configured [upper limit](#upper-limit-1).
+`random-walk` isn't checked upfront: instead, each step is individually
+clamped into the limit by the runner, since a wandering value legitimately
+wants to occasionally reach for a range's edge, unlike a fixed target.
+
+#### `POST /api/ramp/stop`
+
+```json
+{"channel": "A" | "B"}
+```
+
+Stops that channel's active ramp. Always `200 OK`, including when there
+wasn't one.
+
+#### Override
+
+`POST /api/strength` cancels whatever ramp is currently active on that
+command's channel before sending — a silent no-op when there wasn't one,
+so a routine manual +/- click doesn't fire an extra `/events` push on
+every single press.
+
+#### `rampA`/`rampB` in `/events`
+
+`null` when no ramp is active on that channel:
+
+```json
+{
+  "profile": "linear",
+  "current": 23,
+  "target": 40,
+  "remainingSeconds": 340,
+  "from": 10, "to": 40, "overSeconds": 600
+}
+```
+
+`current`/`target` deliberately coincide for `hold`/`random-walk` (both
+settle immediately, or on each re-roll) — they diverge meaningfully only
+for `linear`, which is the profile they were named for. The profile's own
+request fields (`from`/`to`/`overSeconds` for `linear`; `base`/`variance`/
+`stepSeconds`/`durationSeconds` for `random-walk`; `value`/`durationSeconds`
+for `hold`) are merged in on top of the four fields above so the UI can
+redraw its config without having cached the original `POST /api/ramp`
+body — same "merge whatever's relevant for this event" shape
+[webhook payloads](#webhook-payloads) already use, rather than a fixed set
+of always-present-but-often-null fields.
 
 ### `POST /api/webhook`
 
