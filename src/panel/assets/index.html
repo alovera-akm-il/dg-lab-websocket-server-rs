@@ -202,6 +202,20 @@
         </div>
 
         <div class="playlist-mode" id="playlist-mode-a" hidden>
+          <div class="row template-row">
+            <div class="preset-picker" id="template-picker-a">
+              <button type="button" class="preset-trigger" id="template-trigger-a" aria-haspopup="listbox" aria-expanded="false">
+                <span class="preset-trigger-label" id="template-trigger-label-a">No templates yet</span>
+                <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="preset-menu" id="template-menu-a" role="listbox" hidden></div>
+            </div>
+            <button class="btn small primary" id="template-load-a" title="Replace this channel's queue with the selected template">Load</button>
+          </div>
+          <div class="row template-row">
+            <input type="text" class="template-save-input" id="template-save-name-a" placeholder="Save current queue as&hellip;">
+            <button class="btn small" id="template-save-a">Save</button>
+          </div>
           <div class="row">
             <div class="preset-picker" id="preset-picker-playlist-a">
               <button type="button" class="preset-trigger" id="preset-trigger-playlist-a" aria-haspopup="listbox" aria-expanded="false">
@@ -283,6 +297,20 @@
         </div>
 
         <div class="playlist-mode" id="playlist-mode-b" hidden>
+          <div class="row template-row">
+            <div class="preset-picker" id="template-picker-b">
+              <button type="button" class="preset-trigger" id="template-trigger-b" aria-haspopup="listbox" aria-expanded="false">
+                <span class="preset-trigger-label" id="template-trigger-label-b">No templates yet</span>
+                <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <div class="preset-menu" id="template-menu-b" role="listbox" hidden></div>
+            </div>
+            <button class="btn small primary" id="template-load-b" title="Replace this channel's queue with the selected template">Load</button>
+          </div>
+          <div class="row template-row">
+            <input type="text" class="template-save-input" id="template-save-name-b" placeholder="Save current queue as&hellip;">
+            <button class="btn small" id="template-save-b">Save</button>
+          </div>
           <div class="row">
             <div class="preset-picker" id="preset-picker-playlist-b">
               <button type="button" class="preset-trigger" id="preset-trigger-playlist-b" aria-haspopup="listbox" aria-expanded="false">

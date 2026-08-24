@@ -935,6 +935,122 @@
   const playlistA = makePlaylistController('a');
   const playlistB = makePlaylistController('b');
 
+  // -- playlist templates: save a channel's current queue under a name,
+  // load it back into either channel later -----------------------------
+  //
+  // Templates are global (saved from one channel, loadable into either),
+  // so both channels' pickers always show the same name list -- there's
+  // no per-family grouping the way waveform presets have, just flat
+  // names, so this is a simpler picker than `makePresetPicker`.
+
+  function makeTemplatePicker(suffix) {
+    const trigger = $(`template-trigger-${suffix}`);
+    const label = $(`template-trigger-label-${suffix}`);
+    const menu = $(`template-menu-${suffix}`);
+    let selected = null;
+
+    function close() {
+      menu.classList.remove('open');
+      menu.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+    function open() {
+      menu.hidden = false;
+      menu.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+    }
+    function select(name) {
+      selected = name;
+      label.textContent = name;
+      menu.querySelectorAll('.preset-item').forEach((el) => {
+        el.classList.toggle('active', el.dataset.name === name);
+      });
+      close();
+    }
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (menu.classList.contains('open')) close(); else open();
+    });
+    document.addEventListener('click', (e) => {
+      if (menu.classList.contains('open') && !menu.contains(e.target) && e.target !== trigger) close();
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+    });
+
+    return {
+      populate(names) {
+        // Keep the current selection if it's still in the list (e.g.
+        // after saving an unrelated template); otherwise fall back to
+        // the first entry, or the empty state if there are none.
+        const keepSelected = selected != null && names.includes(selected);
+        menu.innerHTML = '';
+        if (!names.length) {
+          label.textContent = 'No templates yet';
+          selected = null;
+          return;
+        }
+        for (const name of names) {
+          const item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'preset-item';
+          item.dataset.name = name;
+          const itemLabel = document.createElement('span');
+          itemLabel.textContent = name;
+          item.appendChild(itemLabel);
+          item.addEventListener('click', () => select(name));
+          menu.appendChild(item);
+        }
+        select(keepSelected ? selected : names[0]);
+      },
+      getSelected: () => selected,
+    };
+  }
+
+  const templatePickerA = makeTemplatePicker('a');
+  const templatePickerB = makeTemplatePicker('b');
+
+  function refreshTemplates() {
+    fetch('/api/templates').then((r) => r.json()).then((names) => {
+      templatePickerA.populate(names);
+      templatePickerB.populate(names);
+    });
+  }
+
+  function wireTemplateChannel(suffix, channel, picker) {
+    $(`template-load-${suffix}`).addEventListener('click', () => {
+      const name = picker.getSelected();
+      if (!name) { showToast('no templates saved yet'); return; }
+      const shuffleActive = $(`playlist-shuffle-${suffix}`).classList.contains('active');
+      postJson(`/api/playlist/${suffix}/load-template`, { name, shuffle: shuffleActive });
+    });
+
+    $(`template-save-${suffix}`).addEventListener('click', () => {
+      const input = $(`template-save-name-${suffix}`);
+      const name = input.value.trim();
+      if (!name) { showToast('enter a name first'); return; }
+      fetch(`/api/templates/${encodeURIComponent(name)}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sourceChannel: channel }),
+      }).then(async (res) => {
+        if (!res.ok) {
+          let message = res.statusText;
+          try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
+          throw new Error(message);
+        }
+        input.value = '';
+        showToast(`Saved template "${name}"`);
+        refreshTemplates();
+      }).catch((e) => showToast(e.message || 'failed to save template'));
+    });
+  }
+
+  wireTemplateChannel('a', 'A', templatePickerA);
+  wireTemplateChannel('b', 'B', templatePickerB);
+  refreshTemplates();
+
   fetch('/api/presets').then((r) => r.json()).then((presets) => {
     presetPickerA.populate(presets);
     presetPickerB.populate(presets);

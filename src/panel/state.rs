@@ -20,7 +20,7 @@
 //! a time -- rather than tracking two full parallel strength/soft-limit
 //! snapshots for a case that in practice won't happen.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 use axum::http::StatusCode;
@@ -32,7 +32,8 @@ use uuid::Uuid;
 
 use crate::v3::protocol::Channel;
 
-use super::playlist::{self, PlaylistQueue, PlaylistSnapshot};
+use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
+use super::templates::{self, Template};
 use super::webhook;
 
 const LOG_CAPACITY: usize = 200;
@@ -163,6 +164,13 @@ struct Inner {
     /// `_b` below), mirroring `reconnect`/`v4_reconnect`.
     playlist_a: PlaylistQueue,
     playlist_b: PlaylistQueue,
+
+    /// Named, reusable playlist definitions -- unlike everything else in
+    /// `Inner`, this one survives a process restart (see
+    /// [`super::templates`]/[`super::persistence`]); every mutating
+    /// method below writes the whole map back to disk right after
+    /// updating it in memory.
+    templates: HashMap<String, Template>,
 }
 
 pub struct Snapshot {
@@ -245,6 +253,7 @@ impl PanelState {
                 log: VecDeque::new(),
                 playlist_a: PlaylistQueue::new(),
                 playlist_b: PlaylistQueue::new(),
+                templates: templates::load_all(),
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
@@ -819,6 +828,84 @@ impl PanelState {
         }
         self.cancel_playlist_token(channel);
         self.notify_changed();
+    }
+
+    /// `channel`'s current queue contents plus its shuffle/loop
+    /// settings -- exactly what saving it as a template needs (see
+    /// `handler::post_template`). Read-only, doesn't touch playback
+    /// state.
+    pub fn playlist_entries_snapshot(&self, channel: Channel) -> (Vec<PlaylistEntry>, bool, bool) {
+        let inner = self.inner.lock().unwrap();
+        let queue = match channel {
+            Channel::A => &inner.playlist_a,
+            Channel::B => &inner.playlist_b,
+        };
+        (
+            queue.entries().to_vec(),
+            queue.shuffle_enabled(),
+            queue.loop_playback(),
+        )
+    }
+
+    /// Replaces `channel`'s queue wholesale (e.g. loading a saved
+    /// template) -- see [`PlaylistQueue::load`]. Interrupts any
+    /// currently-running playback first, same as [`Self::playlist_stop`],
+    /// since swapping the underlying entries out from under a live
+    /// runner task would leave it holding an entry id that no longer
+    /// exists in a completely different queue.
+    pub fn playlist_load(
+        &self,
+        channel: Channel,
+        items: Vec<(playlist::EntryKind, playlist::DurationSpec)>,
+        shuffle: bool,
+        loop_playback: bool,
+    ) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            playlist_mut(&mut inner, channel).load(items, shuffle, loop_playback);
+        }
+        self.cancel_playlist_token(channel);
+        self.notify_changed();
+    }
+
+    // ---- templates ------------------------------------------------------
+
+    pub fn template_names(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        let mut names: Vec<String> = inner.templates.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn template_get(&self, name: &str) -> Option<Template> {
+        self.inner.lock().unwrap().templates.get(name).cloned()
+    }
+
+    /// Inserts or overwrites (upsert -- "save current queue as X"
+    /// naturally replaces an existing X) and persists the whole store to
+    /// disk. The file write happens outside the lock so it can't hold up
+    /// every other request for its duration.
+    pub fn template_save(&self, template: Template) {
+        let snapshot = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.templates.insert(template.name.clone(), template);
+            inner.templates.clone()
+        };
+        templates::save_all(&snapshot);
+    }
+
+    /// Returns whether a template with that name existed. Persists the
+    /// whole store to disk (outside the lock) if it did.
+    pub fn template_delete(&self, name: &str) -> bool {
+        let (removed, snapshot) = {
+            let mut inner = self.inner.lock().unwrap();
+            let removed = inner.templates.remove(name).is_some();
+            (removed, inner.templates.clone())
+        };
+        if removed {
+            templates::save_all(&snapshot);
+        }
+        removed
     }
 }
 

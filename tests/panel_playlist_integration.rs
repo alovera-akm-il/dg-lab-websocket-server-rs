@@ -107,6 +107,39 @@ async fn recv_json(ws: &mut WsStream) -> Value {
     }
 }
 
+/// Points `PANEL_DATA_DIR` at a throwaway temp directory for the
+/// lifetime of one test -- without this, `PanelState::new()`'s template
+/// load (and any save/delete in the test) would read/write the real
+/// repo-relative `panel-data/` directory. Cleans up on drop, including
+/// on a panicking assertion (unwind still runs `Drop`).
+struct ScopedDataDir(std::path::PathBuf);
+
+impl ScopedDataDir {
+    fn new(name: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("dglab-panel-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: test-only, single-process-wide env var; the risk of a
+        // concurrently-running test observing this value is limited to
+        // an unrelated test's `PanelState::new()` loading templates from
+        // this directory instead of the default one, which is harmless
+        // since no other test in this file reads template state.
+        unsafe {
+            std::env::set_var("PANEL_DATA_DIR", &dir);
+        }
+        ScopedDataDir(dir)
+    }
+}
+
+impl Drop for ScopedDataDir {
+    fn drop(&mut self) {
+        unsafe {
+            std::env::remove_var("PANEL_DATA_DIR");
+        }
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 async fn recv_until(ws: &mut WsStream, predicate: impl Fn(&Value) -> bool) -> Value {
     for _ in 0..20 {
         let value = recv_json(ws).await;
@@ -288,4 +321,118 @@ async fn playlist_pause_and_resume_continues_from_where_it_stopped() {
         .await
         .unwrap();
     assert_eq!(panel_state.snapshot().playlist_b.phase.as_str(), "stopped");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn template_save_load_and_delete_round_trips_a_queue_across_channels() {
+    let _data_dir = ScopedDataDir::new("templates");
+    let v3_port = spawn_v3().await;
+    let v4_port = spawn_v4().await;
+    let (panel_base, panel_state) = spawn_panel(v3_port, v4_port).await;
+    let http = reqwest::Client::new();
+
+    // No device needs to be paired for this -- saving/loading a template
+    // is pure queue-data manipulation, independent of which protocol (if
+    // any) is currently active.
+    http.post(format!("{panel_base}/api/playlist/a/items"))
+        .json(&json!({
+            "kind": "pulse", "waveform": "coyote-extrusion",
+            "duration": {"mode": "fixed", "seconds": 20},
+        }))
+        .send()
+        .await
+        .unwrap();
+    http.post(format!("{panel_base}/api/playlist/a/items"))
+        .json(&json!({"kind": "gap", "duration": {"mode": "random", "min": 8, "max": 15}}))
+        .send()
+        .await
+        .unwrap();
+    http.post(format!("{panel_base}/api/playlist/a/settings"))
+        .json(&json!({"shuffle": false, "loopPlayback": true}))
+        .send()
+        .await
+        .unwrap();
+
+    let res = http
+        .post(format!("{panel_base}/api/templates/edge-test"))
+        .json(&json!({"sourceChannel": "A"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        res.status().is_success(),
+        "saving a template should succeed"
+    );
+
+    let names: Vec<String> = http
+        .get(format!("{panel_base}/api/templates"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(names, vec!["edge-test".to_string()]);
+
+    let template: Value = http
+        .get(format!("{panel_base}/api/templates/edge-test"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(template["items"].as_array().unwrap().len(), 2);
+    assert!(
+        template["items"][0].get("id").is_none(),
+        "templates must not store entry ids -- loading assigns fresh ones"
+    );
+    assert_eq!(template["settings"]["loopPlayback"], true);
+
+    // Loading into channel B -- a *different* channel than it was saved
+    // from -- replaces B's queue with the template's, applying the
+    // template's own `loopPlayback` but the load request's own
+    // `shuffle` override.
+    let res = http
+        .post(format!("{panel_base}/api/playlist/b/load-template"))
+        .json(&json!({"name": "edge-test", "shuffle": true}))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        res.status().is_success(),
+        "loading a template should succeed"
+    );
+
+    let snap = panel_state.snapshot();
+    assert_eq!(snap.playlist_b.entries.len(), 2);
+    assert!(snap.playlist_b.shuffle);
+    assert!(snap.playlist_b.loop_playback);
+    // Channel A's own queue is untouched by loading the template into B.
+    assert_eq!(snap.playlist_a.entries.len(), 2);
+
+    let res = http
+        .delete(format!("{panel_base}/api/templates/edge-test"))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let res = http
+        .get(format!("{panel_base}/api/templates/edge-test"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let res = http
+        .post(format!("{panel_base}/api/playlist/b/load-template"))
+        .json(&json!({"name": "edge-test", "shuffle": false}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "loading a deleted template should fail"
+    );
 }

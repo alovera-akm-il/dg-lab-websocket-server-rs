@@ -392,6 +392,13 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 }
 .mode-btn.active { background: var(--accent-bg); color: var(--accent); }
 
+/* -- playlist templates: save/load a channel's queue under a name --
+   sits above the add-item/add-gap rows, set off from them by a bottom
+   border since it acts on the whole queue rather than adding to it. -- */
+.template-row { margin-bottom: 8px; }
+.template-row:last-of-type { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.template-save-input { flex: 1; min-width: 120px; }
+
 /* -- playlists: add row, queue, playback controls -- */
 .duration-fixed, .duration-min, .duration-max { width: 60px; }
 .settings-sep { color: var(--faint); font-size: 12px; }

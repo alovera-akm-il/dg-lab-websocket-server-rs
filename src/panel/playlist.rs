@@ -239,6 +239,30 @@ impl PlaylistQueue {
         self.loop_playback = loop_playback;
     }
 
+    /// Replaces the entire queue with `items`, assigning each a fresh id
+    /// via the same path [`Self::add`] uses -- callers (e.g. loading a
+    /// saved template, see `super::templates`) never supply ids of
+    /// their own, since an id is queue-local identity, not portable
+    /// data. Stops any current playback first, same effect as
+    /// [`Self::stop`] -- this is a destructive replace, not a merge, and
+    /// swapping the underlying entries out from under a live runner
+    /// would otherwise leave it holding an entry id from a completely
+    /// different queue.
+    pub fn load(
+        &mut self,
+        items: Vec<(EntryKind, DurationSpec)>,
+        shuffle: bool,
+        loop_playback: bool,
+    ) {
+        self.stop();
+        self.entries = items
+            .into_iter()
+            .map(|(kind, duration)| PlaylistEntry::new(kind, duration))
+            .collect();
+        self.shuffle = shuffle;
+        self.loop_playback = loop_playback;
+    }
+
     // ---- playback control ---------------------------------------------
 
     /// Starts playback from a stopped queue, or resumes a paused one
@@ -646,6 +670,30 @@ mod tests {
         // here since it was the only other entry, but the entries() Vec
         // itself reflects the new order immediately.
         assert!(matches!(q.advance(), Step::Run { .. }));
+    }
+
+    #[test]
+    fn load_replaces_the_queue_and_stops_any_playback_first() {
+        let mut q = PlaylistQueue::new();
+        let (k1, d1) = pulse("A", 5);
+        q.add(k1, d1);
+        q.play().unwrap();
+        assert_eq!(q.phase(), Phase::Playing);
+
+        let (k2, d2) = pulse("B", 9);
+        q.load(vec![(k2, d2)], true, true);
+
+        assert_eq!(q.phase(), Phase::Stopped);
+        assert_eq!(q.current_id(), None);
+        assert!(q.shuffle_enabled());
+        assert!(q.loop_playback());
+        assert_eq!(q.entries().len(), 1);
+        match &q.entries()[0].kind {
+            EntryKind::Pulse { waveform } => assert_eq!(waveform, "B"),
+            EntryKind::Gap => panic!("expected a pulse entry"),
+        }
+        // The loaded entry gets a fresh id -- callers never supply one.
+        assert!(q.entries()[0].id != Uuid::nil());
     }
 
     #[test]

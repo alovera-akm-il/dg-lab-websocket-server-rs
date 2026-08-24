@@ -24,8 +24,8 @@ use uuid::Uuid;
 use super::config::Config;
 use super::state::{ActiveTarget, PanelState, Snapshot};
 use super::{
-    assets, commands, network, playlist, playlist_runner, presets, qrcode, v4_client, v4_commands,
-    webhook,
+    assets, commands, network, playlist, playlist_runner, presets, qrcode, templates, v4_client,
+    v4_commands, webhook,
 };
 
 #[derive(Clone)]
@@ -70,6 +70,17 @@ pub fn router(state: AppState) -> Router {
         .route("/api/playlist/{channel}/play", post(post_playlist_play))
         .route("/api/playlist/{channel}/pause", post(post_playlist_pause))
         .route("/api/playlist/{channel}/stop", post(post_playlist_stop))
+        .route(
+            "/api/playlist/{channel}/load-template",
+            post(post_playlist_load_template),
+        )
+        .route("/api/templates", get(get_templates))
+        .route(
+            "/api/templates/{name}",
+            get(get_template)
+                .post(post_template)
+                .delete(delete_template),
+        )
         .with_state(state)
 }
 
@@ -765,6 +776,89 @@ async fn post_playlist_stop(
         commands::channel_str(channel)
     ));
     StatusCode::OK.into_response()
+}
+
+#[derive(Deserialize)]
+struct LoadTemplateBody {
+    name: String,
+    shuffle: bool,
+}
+
+async fn post_playlist_load_template(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    Json(body): Json<LoadTemplateBody>,
+) -> Response {
+    let Some(channel) = commands::parse_channel(&channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    let Some(template) = state.panel.template_get(&body.name) else {
+        return error_response(StatusCode::NOT_FOUND, "no such template");
+    };
+    let items = match template.to_queue_items() {
+        Ok(items) => items,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
+    let loop_playback = template.settings.loop_playback;
+    state
+        .panel
+        .playlist_load(channel, items, body.shuffle, loop_playback);
+    state.panel.log(format!(
+        "Playlist channel {}: loaded template \"{}\"",
+        commands::channel_str(channel),
+        body.name
+    ));
+    StatusCode::OK.into_response()
+}
+
+// ---- templates ----------------------------------------------------
+
+async fn get_templates(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.panel.template_names()))
+}
+
+async fn get_template(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    match state.panel.template_get(&name) {
+        Some(template) => Json(template).into_response(),
+        None => error_response(StatusCode::NOT_FOUND, "no such template"),
+    }
+}
+
+#[derive(Deserialize)]
+struct SaveTemplateBody {
+    #[serde(rename = "sourceChannel")]
+    source_channel: String,
+}
+
+async fn post_template(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<SaveTemplateBody>,
+) -> Response {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "template name must not be empty");
+    }
+    let Some(channel) = commands::parse_channel(&body.source_channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid sourceChannel");
+    };
+    let (entries, shuffle, loop_playback) = state.panel.playlist_entries_snapshot(channel);
+    let template = templates::Template::from_queue(name.clone(), &entries, shuffle, loop_playback);
+    state.panel.template_save(template);
+    state.panel.log(format!(
+        "Saved channel {}'s queue as template \"{name}\"",
+        commands::channel_str(channel)
+    ));
+    Json(json!({"name": name})).into_response()
+}
+
+async fn delete_template(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    if state.panel.template_delete(&name) {
+        state.panel.log(format!("Deleted template \"{name}\""));
+        StatusCode::OK.into_response()
+    } else {
+        error_response(StatusCode::NOT_FOUND, "no such template")
+    }
 }
 
 fn send_frame(state: &AppState, tx: &mpsc::UnboundedSender<WsMessage>, frame: Value) -> Response {
