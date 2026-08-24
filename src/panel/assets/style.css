@@ -231,6 +231,20 @@ fieldset.controls:disabled { opacity: 0.42; }
 
 .channel { border-top: 1px solid var(--border); padding-top: 18px; margin-top: 18px; }
 .channel:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+/* Pulse waveform channels sit side by side rather than stacked, so each
+   is its own column and the divider moves from top to left. */
+.channel-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; min-width: 0; }
+.channel-columns .channel {
+  border-top: none; padding-top: 0; margin-top: 0;
+  border-left: 1px solid var(--border); padding-left: 22px; margin-left: -1px;
+  min-width: 0;
+}
+.channel-columns .channel:first-of-type { border-left: none; padding-left: 0; margin-left: 0; }
+@media (max-width: 720px) {
+  .channel-columns { grid-template-columns: 1fr; gap: 0; }
+  .channel-columns .channel { border-left: none; padding-left: 0; margin-left: 0; border-top: 1px solid var(--border); padding-top: 18px; margin-top: 18px; }
+  .channel-columns .channel:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+}
 .channel-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }
 .channel-title { font-weight: 700; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .channel-value { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; color: var(--text); transition: color 0.45s ease; }
@@ -379,8 +393,6 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 .mode-btn.active { background: var(--accent-bg); color: var(--accent); }
 
 /* -- playlists: add row, queue, playback controls -- */
-.add-divider { width: 1px; align-self: stretch; background: var(--border); margin: 2px 2px; }
-
 .duration-fixed, .duration-min, .duration-max { width: 60px; }
 .settings-sep { color: var(--faint); font-size: 12px; }
 
