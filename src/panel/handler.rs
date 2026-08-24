@@ -22,10 +22,11 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
 use super::config::Config;
+use super::ramp::{self, RampProfile};
 use super::state::{ActiveTarget, PanelState, Snapshot};
 use super::{
-    assets, commands, network, playlist, playlist_runner, presets, qrcode, templates, v4_client,
-    v4_commands, webhook,
+    assets, commands, network, playlist, playlist_runner, presets, qrcode, ramp_runner, templates,
+    v4_client, v4_commands, webhook,
 };
 
 #[derive(Clone)]
@@ -52,6 +53,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/clear", post(post_clear))
         .route("/api/pulse", post(post_pulse))
         .route("/api/limit", post(post_limit))
+        .route("/api/ramp", post(post_ramp))
+        .route("/api/ramp/stop", post(post_ramp_stop))
         .route("/api/webhook", post(post_webhook))
         .route("/api/reconnect", post(post_reconnect))
         .route("/api/playlist/{channel}/items", post(post_playlist_item))
@@ -212,7 +215,51 @@ fn snapshot_json(
         "pairUrlV4": pair_url_v4,
         "playlistA": playlist_json(&snapshot.playlist_a),
         "playlistB": playlist_json(&snapshot.playlist_b),
+        "rampA": ramp_json(snapshot.ramp_a),
+        "rampB": ramp_json(snapshot.ramp_b),
     })
+}
+
+/// `null` when no ramp is active. The base fields (`profile`/`current`/
+/// `target`/`remainingSeconds`) are always present; the profile's own
+/// parameters (`from`/`to`/`overSeconds` for `linear`, etc.) are merged
+/// in on top so the UI can redraw its config without having cached the
+/// original `POST /api/ramp` body -- same "merge whatever's relevant
+/// for this event" shape `webhook::notify`'s payloads already use.
+fn ramp_json(ramp: Option<ramp::RampSnapshot>) -> Value {
+    let Some(r) = ramp else {
+        return Value::Null;
+    };
+    let profile_fields = match r.profile {
+        ramp::RampProfile::Linear {
+            from,
+            to,
+            over_seconds,
+        } => json!({"from": from, "to": to, "overSeconds": over_seconds}),
+        ramp::RampProfile::RandomWalk {
+            base,
+            variance,
+            step_seconds,
+            duration_seconds,
+        } => json!({
+            "base": base, "variance": variance,
+            "stepSeconds": step_seconds, "durationSeconds": duration_seconds,
+        }),
+        ramp::RampProfile::Hold {
+            value,
+            duration_seconds,
+        } => json!({"value": value, "durationSeconds": duration_seconds}),
+    };
+    let mut obj = json!({
+        "profile": r.profile.as_str(),
+        "current": r.current,
+        "target": r.target,
+        "remainingSeconds": r.remaining_secs,
+    });
+    if let (Value::Object(base_fields), Value::Object(extra_fields)) = (&mut obj, profile_fields) {
+        base_fields.extend(extra_fields);
+    }
+    obj
 }
 
 fn playlist_entry_json(entry: &playlist::PlaylistEntry) -> Value {
@@ -381,6 +428,10 @@ async fn post_strength(State(state): State<AppState>, Json(body): Json<StrengthB
     let Some(channel) = commands::parse_channel(&body.channel) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid channel");
     };
+    // Per the feature request: any manual strength command overrides
+    // whatever automated ramp was running on this channel. Silent no-op
+    // when there wasn't one -- see `PanelState::ramp_cancel`'s docs.
+    state.panel.ramp_cancel(channel);
     let op = match body.op.as_str() {
         "inc" => commands::StrengthOp::Inc,
         "dec" => commands::StrengthOp::Dec,
@@ -465,6 +516,130 @@ async fn post_limit(State(state): State<AppState>, Json(body): Json<LimitBody>) 
         .map_or_else(|| "cleared".to_string(), |v| v.to_string());
     state.panel.log(format!(
         "Upper limit for channel {} set to {description}",
+        commands::channel_str(channel)
+    ));
+    StatusCode::OK.into_response()
+}
+
+// ---- ramps --------------------------------------------------------
+
+#[derive(Deserialize)]
+struct RampRequestBody {
+    channel: String,
+    #[serde(flatten)]
+    profile: RampProfileBody,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "profile", rename_all = "kebab-case")]
+enum RampProfileBody {
+    Linear {
+        from: i64,
+        to: i64,
+        #[serde(rename = "overSeconds")]
+        over_seconds: u32,
+    },
+    RandomWalk {
+        base: i64,
+        variance: i64,
+        #[serde(rename = "stepSeconds")]
+        step_seconds: u32,
+        #[serde(rename = "durationSeconds")]
+        duration_seconds: u32,
+    },
+    Hold {
+        value: i64,
+        #[serde(rename = "durationSeconds")]
+        duration_seconds: u32,
+    },
+}
+
+impl RampProfileBody {
+    fn into_profile(self) -> RampProfile {
+        match self {
+            RampProfileBody::Linear {
+                from,
+                to,
+                over_seconds,
+            } => RampProfile::Linear {
+                from,
+                to,
+                over_seconds,
+            },
+            RampProfileBody::RandomWalk {
+                base,
+                variance,
+                step_seconds,
+                duration_seconds,
+            } => RampProfile::RandomWalk {
+                base,
+                variance,
+                step_seconds,
+                duration_seconds,
+            },
+            RampProfileBody::Hold {
+                value,
+                duration_seconds,
+            } => RampProfile::Hold {
+                value,
+                duration_seconds,
+            },
+        }
+    }
+}
+
+async fn post_ramp(State(state): State<AppState>, Json(body): Json<RampRequestBody>) -> Response {
+    let Some(channel) = commands::parse_channel(&body.channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    let profile = body.profile.into_profile();
+    if let Err(message) = profile.validate() {
+        return error_response(StatusCode::BAD_REQUEST, message);
+    }
+    // `RandomWalk` has no fixed peak -- its steps are clamped into the
+    // limit individually by the runner instead (see `ramp::RunnerTick::step`).
+    if let Some(peak) = profile.peak_value() {
+        let limit = state.panel.strength_and_limit(channel).1;
+        if let Some(limit) = limit
+            && peak > limit
+        {
+            return error_response(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "channel {} ramp target {peak} would exceed the configured upper limit of {limit}",
+                    commands::channel_str(channel)
+                ),
+            );
+        }
+    }
+
+    let token = state.panel.ramp_start(channel, profile);
+    tokio::spawn(ramp_runner::run(
+        state.panel.clone(),
+        channel,
+        profile,
+        token,
+    ));
+    state.panel.log(format!(
+        "Ramp channel {}: started {} profile",
+        commands::channel_str(channel),
+        profile.as_str()
+    ));
+    StatusCode::OK.into_response()
+}
+
+#[derive(Deserialize)]
+struct RampStopBody {
+    channel: String,
+}
+
+async fn post_ramp_stop(State(state): State<AppState>, Json(body): Json<RampStopBody>) -> Response {
+    let Some(channel) = commands::parse_channel(&body.channel) else {
+        return error_response(StatusCode::BAD_REQUEST, "invalid channel");
+    };
+    state.panel.ramp_cancel(channel);
+    state.panel.log(format!(
+        "Ramp channel {}: stopped",
         commands::channel_str(channel)
     ));
     StatusCode::OK.into_response()

@@ -33,6 +33,7 @@ use uuid::Uuid;
 use crate::v3::protocol::Channel;
 
 use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
+use super::ramp::{RampProfile, RampSnapshot};
 use super::templates::{self, Template};
 use super::webhook;
 
@@ -165,6 +166,15 @@ struct Inner {
     playlist_a: PlaylistQueue,
     playlist_b: PlaylistQueue,
 
+    /// Per-channel active strength ramp, if any -- `None` means no ramp
+    /// is running on that channel. Like playlists, this is a read-only
+    /// snapshot updated in place by the runner task (see
+    /// `super::ramp_runner`); there's no pause/resume, only start/stop
+    /// (see `ramp_token_a`/`_b` below), so unlike playlists there's no
+    /// captured "remaining" state to restore on resume.
+    ramp_a: Option<RampSnapshot>,
+    ramp_b: Option<RampSnapshot>,
+
     /// Named, reusable playlist definitions -- unlike everything else in
     /// `Inner`, this one survives a process restart (see
     /// [`super::templates`]/[`super::persistence`]); every mutating
@@ -201,6 +211,8 @@ pub struct Snapshot {
     pub log: Vec<String>,
     pub playlist_a: PlaylistSnapshot,
     pub playlist_b: PlaylistSnapshot,
+    pub ramp_a: Option<RampSnapshot>,
+    pub ramp_b: Option<RampSnapshot>,
 }
 
 pub struct PanelState {
@@ -217,6 +229,10 @@ pub struct PanelState {
     /// same pattern as `reconnect`/`v4_reconnect`.
     playlist_token_a: Mutex<CancellationToken>,
     playlist_token_b: Mutex<CancellationToken>,
+    /// Same pattern as `playlist_token_a`/`_b`, for the ramp runner --
+    /// see `Inner::ramp_a`/`_b`'s docs.
+    ramp_token_a: Mutex<CancellationToken>,
+    ramp_token_b: Mutex<CancellationToken>,
 }
 
 impl PanelState {
@@ -253,6 +269,8 @@ impl PanelState {
                 log: VecDeque::new(),
                 playlist_a: PlaylistQueue::new(),
                 playlist_b: PlaylistQueue::new(),
+                ramp_a: None,
+                ramp_b: None,
                 templates: templates::load_all(),
             }),
             changed,
@@ -260,6 +278,8 @@ impl PanelState {
             v4_reconnect: Mutex::new(CancellationToken::new()),
             playlist_token_a: Mutex::new(CancellationToken::new()),
             playlist_token_b: Mutex::new(CancellationToken::new()),
+            ramp_token_a: Mutex::new(CancellationToken::new()),
+            ramp_token_b: Mutex::new(CancellationToken::new()),
         }
     }
 
@@ -297,6 +317,8 @@ impl PanelState {
             log: inner.log.iter().cloned().collect(),
             playlist_a: inner.playlist_a.snapshot(),
             playlist_b: inner.playlist_b.snapshot(),
+            ramp_a: inner.ramp_a,
+            ramp_b: inner.ramp_b,
         }
     }
 
@@ -868,6 +890,94 @@ impl PanelState {
         self.notify_changed();
     }
 
+    // ---- ramps ------------------------------------------------------------
+
+    fn ramp_token_mutex(&self, channel: Channel) -> &Mutex<CancellationToken> {
+        match channel {
+            Channel::A => &self.ramp_token_a,
+            Channel::B => &self.ramp_token_b,
+        }
+    }
+
+    /// Replaces any existing ramp on `channel` with a fresh one and
+    /// returns the token to spawn its runner with -- validation
+    /// (`profile.validate()`, the upper-limit check) is the caller's
+    /// job (`handler::post_ramp`), same as `post_strength` validates
+    /// before ever touching `PanelState`.
+    pub fn ramp_start(&self, channel: Channel, profile: RampProfile) -> CancellationToken {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            *ramp_mut(&mut inner, channel) = Some(RampSnapshot {
+                profile,
+                current: profile.initial_value(),
+                target: profile.target(None),
+                remaining_secs: profile.total_seconds(),
+            });
+        }
+        let mut guard = self.ramp_token_mutex(channel).lock().unwrap();
+        guard.cancel();
+        *guard = CancellationToken::new();
+        let token = guard.clone();
+        drop(guard);
+        self.notify_changed();
+        token
+    }
+
+    /// Called by the runner once per tick to report progress -- a no-op
+    /// if the ramp has already been cleared (e.g. cancelled the instant
+    /// before this call landed).
+    pub fn ramp_tick(
+        &self,
+        channel: Channel,
+        current: i64,
+        target: Option<i64>,
+        remaining_secs: u32,
+    ) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if let Some(snap) = ramp_mut(&mut inner, channel) {
+                snap.current = current;
+                snap.target = target;
+                snap.remaining_secs = remaining_secs;
+            }
+        }
+        self.notify_changed();
+    }
+
+    /// Clears `channel`'s ramp state without touching its token --
+    /// called by the runner itself on a *natural* end (duration
+    /// elapsed), where nothing external needs to be interrupted. See
+    /// [`Self::ramp_cancel`] for the operator-initiated stop, which
+    /// also cancels the token.
+    pub fn ramp_clear(&self, channel: Channel) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            *ramp_mut(&mut inner, channel) = None;
+        }
+        self.notify_changed();
+    }
+
+    /// Stops `channel`'s ramp, if one is active: clears its state and
+    /// cancels its runner task. Used by `POST /api/ramp/stop` and by
+    /// `post_strength`'s override (any manual strength command cancels
+    /// the channel's active ramp) -- a no-op, not just idempotent but
+    /// silent (no log line, no SSE push), when there wasn't one, so a
+    /// manual +/- click doesn't cause a redundant broadcast on every
+    /// single press.
+    pub fn ramp_cancel(&self, channel: Channel) {
+        let had_ramp = {
+            let mut inner = self.inner.lock().unwrap();
+            let slot = ramp_mut(&mut inner, channel);
+            let had = slot.is_some();
+            *slot = None;
+            had
+        };
+        if had_ramp {
+            self.ramp_token_mutex(channel).lock().unwrap().cancel();
+            self.notify_changed();
+        }
+    }
+
     // ---- templates ------------------------------------------------------
 
     pub fn template_names(&self) -> Vec<String> {
@@ -916,6 +1026,13 @@ fn playlist_mut(inner: &mut Inner, channel: Channel) -> &mut PlaylistQueue {
     match channel {
         Channel::A => &mut inner.playlist_a,
         Channel::B => &mut inner.playlist_b,
+    }
+}
+
+fn ramp_mut(inner: &mut Inner, channel: Channel) -> &mut Option<RampSnapshot> {
+    match channel {
+        Channel::A => &mut inner.ramp_a,
+        Channel::B => &mut inner.ramp_b,
     }
 }
 

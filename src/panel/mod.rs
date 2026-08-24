@@ -22,6 +22,8 @@ pub mod playlist;
 pub mod playlist_runner;
 pub mod presets;
 pub mod qrcode;
+pub mod ramp;
+pub mod ramp_runner;
 pub mod relay_client;
 pub mod state;
 pub mod templates;

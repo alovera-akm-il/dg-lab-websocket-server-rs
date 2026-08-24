@@ -135,6 +135,47 @@
           <button class="btn small" data-limit-clear="A">Clear</button>
           <span class="limit-current mono" id="limit-a-current">no limit</span>
         </div>
+
+        <div class="ramp-block" id="ramp-block-a">
+          <div class="ramp-config" id="ramp-config-a">
+            <div class="mode-toggle ramp-profile-toggle" id="ramp-profile-toggle-a">
+              <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
+              <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
+              <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
+            </div>
+            <div class="row ramp-fields" id="ramp-fields-linear-a">
+              <label class="field-label">From</label><input type="number" id="ramp-from-a" value="10" min="0">
+              <label class="field-label">To</label><input type="number" id="ramp-to-a" value="40" min="0">
+              <label class="field-label">Over (s)</label><input type="number" id="ramp-over-a" value="600" min="1">
+            </div>
+            <div class="row ramp-fields" id="ramp-fields-random-walk-a" hidden>
+              <label class="field-label">Base</label><input type="number" id="ramp-base-a" value="30" min="0">
+              <label class="field-label">&plusmn;</label><input type="number" id="ramp-variance-a" value="15" min="0">
+              <label class="field-label">Step (s)</label><input type="number" id="ramp-step-a" value="30" min="1">
+              <label class="field-label">For (s)</label><input type="number" id="ramp-rw-duration-a" value="600" min="1">
+            </div>
+            <div class="row ramp-fields" id="ramp-fields-hold-a" hidden>
+              <label class="field-label">Value</label><input type="number" id="ramp-hold-value-a" value="25" min="0">
+              <label class="field-label">For (s)</label><input type="number" id="ramp-hold-duration-a" value="300" min="1">
+            </div>
+            <button class="btn small primary" id="ramp-start-a">Start ramp</button>
+          </div>
+          <div class="ramp-active" id="ramp-active-a" hidden>
+            <div class="ramp-active-readout">
+              <span class="now mono" id="ramp-current-a">-</span>
+              <span class="arrow">&rarr;</span>
+              <span class="target mono" id="ramp-target-a">-</span>
+              <span class="eta mono" id="ramp-eta-a"></span>
+            </div>
+            <div class="ramp-progress-track"><div class="ramp-progress-fill" id="ramp-progress-a"></div></div>
+            <div class="ramp-active-meta">
+              <span class="tag" id="ramp-active-profile-a"></span>
+              <span class="mono" id="ramp-active-summary-a"></span>
+              <span style="flex:1"></span>
+              <button class="btn small" id="ramp-cancel-a">Cancel ramp</button>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="channel">
         <div class="channel-head">
@@ -154,6 +195,47 @@
           <button class="btn small" data-limit-set="B" data-value-input="limit-b-value">Set</button>
           <button class="btn small" data-limit-clear="B">Clear</button>
           <span class="limit-current mono" id="limit-b-current">no limit</span>
+        </div>
+
+        <div class="ramp-block" id="ramp-block-b">
+          <div class="ramp-config" id="ramp-config-b">
+            <div class="mode-toggle ramp-profile-toggle" id="ramp-profile-toggle-b">
+              <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
+              <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
+              <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
+            </div>
+            <div class="row ramp-fields" id="ramp-fields-linear-b">
+              <label class="field-label">From</label><input type="number" id="ramp-from-b" value="10" min="0">
+              <label class="field-label">To</label><input type="number" id="ramp-to-b" value="40" min="0">
+              <label class="field-label">Over (s)</label><input type="number" id="ramp-over-b" value="600" min="1">
+            </div>
+            <div class="row ramp-fields" id="ramp-fields-random-walk-b" hidden>
+              <label class="field-label">Base</label><input type="number" id="ramp-base-b" value="30" min="0">
+              <label class="field-label">&plusmn;</label><input type="number" id="ramp-variance-b" value="15" min="0">
+              <label class="field-label">Step (s)</label><input type="number" id="ramp-step-b" value="30" min="1">
+              <label class="field-label">For (s)</label><input type="number" id="ramp-rw-duration-b" value="600" min="1">
+            </div>
+            <div class="row ramp-fields" id="ramp-fields-hold-b" hidden>
+              <label class="field-label">Value</label><input type="number" id="ramp-hold-value-b" value="25" min="0">
+              <label class="field-label">For (s)</label><input type="number" id="ramp-hold-duration-b" value="300" min="1">
+            </div>
+            <button class="btn small primary" id="ramp-start-b">Start ramp</button>
+          </div>
+          <div class="ramp-active" id="ramp-active-b" hidden>
+            <div class="ramp-active-readout">
+              <span class="now mono" id="ramp-current-b">-</span>
+              <span class="arrow">&rarr;</span>
+              <span class="target mono" id="ramp-target-b">-</span>
+              <span class="eta mono" id="ramp-eta-b"></span>
+            </div>
+            <div class="ramp-progress-track"><div class="ramp-progress-fill" id="ramp-progress-b"></div></div>
+            <div class="ramp-active-meta">
+              <span class="tag" id="ramp-active-profile-b"></span>
+              <span class="mono" id="ramp-active-summary-b"></span>
+              <span style="flex:1"></span>
+              <button class="btn small" id="ramp-cancel-b">Cancel ramp</button>
+            </div>
+          </div>
         </div>
       </div>
     </fieldset>

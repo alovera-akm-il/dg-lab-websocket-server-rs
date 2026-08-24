@@ -255,6 +255,23 @@ fieldset.controls:disabled { opacity: 0.42; }
 .limit-row input[type=number] { width: 64px; }
 .limit-current { font-size: 11.5px; color: var(--faint); }
 
+/* -- strength ramps: a programmatic curve the panel drives on a 1s
+   tick, in place of individual manual +/-/Set calls -- see
+   docs/api.md's "Ramps" section. -- */
+.ramp-block { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ramp-fields { margin-top: 10px; }
+.ramp-fields input[type=number] { width: 64px; }
+.ramp-active-readout { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.ramp-active-readout .now { font-size: 22px; font-weight: 800; color: var(--accent); }
+.ramp-active-readout .arrow { color: var(--faint); }
+.ramp-active-readout .target { font-size: 14px; font-weight: 700; color: var(--muted); }
+.ramp-active-readout .eta { margin-left: auto; font-size: 11.5px; color: var(--faint); }
+.ramp-progress-track { width: 100%; height: 6px; border-radius: 999px; background: var(--panel-3); overflow: hidden; }
+.ramp-progress-fill { height: 100%; background: linear-gradient(to right, var(--accent-border), var(--accent)); transition: width 0.3s linear; }
+.ramp-active-meta { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.ramp-active-meta .tag { border-color: var(--accent-border); color: var(--accent); background: var(--accent-bg); }
+.ramp-active-meta .mono { font-size: 11.5px; color: var(--faint); }
+
 .slider-row { margin-bottom: 12px; }
 .strength-slider {
   -webkit-appearance: none; appearance: none;

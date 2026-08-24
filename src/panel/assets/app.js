@@ -278,6 +278,112 @@
   const sliderA = makeSliderController('A', sliderAEl, strengthAInlineEl, strengthACapEl);
   const sliderB = makeSliderController('B', sliderBEl, strengthBInlineEl, strengthBCapEl);
 
+  // -- strength ramps: a programmatic curve the panel drives on a 1s
+  // tick, in place of individual manual +/-/Set calls ------------------
+
+  function formatEta(seconds) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return m > 0 ? `${m}:${String(s).padStart(2, '0')} left` : `${s}s left`;
+  }
+
+  function rampSummary(ramp) {
+    if (ramp.profile === 'linear') return `${ramp.from} → ${ramp.to} over ${ramp.overSeconds}s`;
+    if (ramp.profile === 'random-walk') return `${ramp.base} ± ${ramp.variance}, every ${ramp.stepSeconds}s`;
+    if (ramp.profile === 'hold') return `holding ${ramp.value} for ${ramp.durationSeconds}s`;
+    return '';
+  }
+
+  function makeRampController(suffix, channel) {
+    const toggle = $(`ramp-profile-toggle-${suffix}`);
+    const fieldsByProfile = {
+      linear: $(`ramp-fields-linear-${suffix}`),
+      'random-walk': $(`ramp-fields-random-walk-${suffix}`),
+      hold: $(`ramp-fields-hold-${suffix}`),
+    };
+    let selectedProfile = 'linear';
+
+    toggle.querySelectorAll('.mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectedProfile = btn.dataset.rampProfile;
+        toggle.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b === btn));
+        Object.entries(fieldsByProfile).forEach(([profile, el]) => {
+          el.hidden = profile !== selectedProfile;
+        });
+      });
+    });
+
+    function intVal(id, fallback) {
+      const v = parseInt($(id).value, 10);
+      return Number.isFinite(v) ? v : fallback;
+    }
+
+    function buildBody() {
+      if (selectedProfile === 'linear') {
+        return {
+          channel,
+          profile: 'linear',
+          from: intVal(`ramp-from-${suffix}`, 0),
+          to: intVal(`ramp-to-${suffix}`, 0),
+          overSeconds: intVal(`ramp-over-${suffix}`, 1),
+        };
+      }
+      if (selectedProfile === 'random-walk') {
+        return {
+          channel,
+          profile: 'random-walk',
+          base: intVal(`ramp-base-${suffix}`, 0),
+          variance: intVal(`ramp-variance-${suffix}`, 0),
+          stepSeconds: intVal(`ramp-step-${suffix}`, 1),
+          durationSeconds: intVal(`ramp-rw-duration-${suffix}`, 1),
+        };
+      }
+      return {
+        channel,
+        profile: 'hold',
+        value: intVal(`ramp-hold-value-${suffix}`, 0),
+        durationSeconds: intVal(`ramp-hold-duration-${suffix}`, 1),
+      };
+    }
+
+    $(`ramp-start-${suffix}`).addEventListener('click', () => {
+      vibrate(20);
+      postJson('/api/ramp', buildBody());
+    });
+    $(`ramp-cancel-${suffix}`).addEventListener('click', () => {
+      vibrate(30);
+      postJson('/api/ramp/stop', { channel });
+    });
+
+    const configEl = $(`ramp-config-${suffix}`);
+    const activeEl = $(`ramp-active-${suffix}`);
+    const currentEl = $(`ramp-current-${suffix}`);
+    const targetEl = $(`ramp-target-${suffix}`);
+    const etaEl = $(`ramp-eta-${suffix}`);
+    const progressEl = $(`ramp-progress-${suffix}`);
+    const profileTagEl = $(`ramp-active-profile-${suffix}`);
+    const summaryEl = $(`ramp-active-summary-${suffix}`);
+
+    return {
+      render(ramp) {
+        configEl.hidden = ramp != null;
+        activeEl.hidden = ramp == null;
+        if (!ramp) return;
+        currentEl.textContent = ramp.current;
+        targetEl.textContent = ramp.target != null ? `${ramp.target} target` : '';
+        etaEl.textContent = formatEta(ramp.remainingSeconds);
+        profileTagEl.textContent = ramp.profile;
+        summaryEl.textContent = rampSummary(ramp);
+        const total = ramp.profile === 'linear' ? ramp.overSeconds : ramp.durationSeconds;
+        const pct = total > 0 ? Math.max(0, Math.min(100, 100 - (ramp.remainingSeconds / total) * 100)) : 0;
+        progressEl.style.width = `${pct}%`;
+      },
+    };
+  }
+
+  const rampA = makeRampController('a', 'A');
+  const rampB = makeRampController('b', 'B');
+
   function render(state) {
     const v4Paired = state.v4Status === 'paired';
     const v3Paired = state.status === 'paired';
@@ -321,6 +427,8 @@
     // send would otherwise yank the thumb back mid-drag.
     if (!sliderA.isDragging()) sliderA.sync(state.strengthA, state.limitA);
     if (!sliderB.isDragging()) sliderB.sync(state.strengthB, state.limitB);
+    rampA.render(state.rampA);
+    rampB.render(state.rampB);
 
     buttonActionEl.textContent = state.lastButtonAction != null ? state.lastButtonAction : '-';
     $('limit-a-current').textContent = state.limitA != null ? `current: ${state.limitA}` : 'no limit';
