@@ -51,6 +51,18 @@
     setTimeout(() => { el.style.color = ''; }, 450);
   }
 
+  // Tactile confirmation for controls that actually cause the physical
+  // device to do something -- strength changes, triggering/stopping a
+  // waveform, playlist transport -- not for settings/UI-only actions
+  // (limits, webhook, mode/preset pickers). Android Chrome supports the
+  // Vibration API; iOS Safari doesn't implement it at all, so this is a
+  // no-op there rather than an error.
+  function vibrate(ms) {
+    if (navigator.vibrate) {
+      try { navigator.vibrate(ms); } catch (e) { /* ignore */ }
+    }
+  }
+
   // -- tap-to-open info popover ---------------------------------------
   //
   // Explains an ambiguous reading (e.g. "battery: 0" that might just mean
@@ -367,12 +379,12 @@
 
   document.querySelectorAll('[data-strength]').forEach((btn) => {
     const payload = JSON.parse(btn.getAttribute('data-strength'));
-    btn.addEventListener('click', () => postJson('/api/strength', payload));
+    btn.addEventListener('click', () => { vibrate(15); postJson('/api/strength', payload); });
   });
 
   document.querySelectorAll('[data-clear]').forEach((btn) => {
     const channel = btn.getAttribute('data-clear');
-    btn.addEventListener('click', () => postJson('/api/clear', { channel }));
+    btn.addEventListener('click', () => { vibrate(30); postJson('/api/clear', { channel }); });
   });
 
   document.querySelectorAll('[data-limit-set]').forEach((btn) => {
@@ -389,6 +401,49 @@
     const channel = btn.getAttribute('data-limit-clear');
     btn.addEventListener('click', () => postJson('/api/limit', { channel, value: null }));
   });
+
+  // -- tap-to-copy pairing links -----------------------------------------
+  //
+  // `navigator.clipboard` needs a secure context (https, or localhost) --
+  // but this panel is normally opened over plain LAN http (see the
+  // README's pairing-over-WiFi section), where it's simply undefined. The
+  // `execCommand('copy')` fallback is deprecated but still works from
+  // plain http origins in every browser that matters here.
+  async function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch (e) { /* fall through to the fallback below */ }
+    }
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function wireCopyButton(suffix) {
+    const btn = $(`copy-link-${suffix}`);
+    btn.addEventListener('click', async () => {
+      const text = $(`pair-link-${suffix}`).textContent;
+      if (!text) { showToast('no pairing link yet'); return; }
+      const ok = await copyText(text);
+      showToast(ok ? 'Pairing link copied' : 'Could not copy — long-press to select the link');
+      if (ok) {
+        btn.classList.add('copied');
+        setTimeout(() => btn.classList.remove('copied'), 1200);
+      }
+    });
+  }
+  wireCopyButton('v4');
+  wireCopyButton('v3');
 
   $('reconnect-btn').addEventListener('click', () => {
     postJson('/api/reconnect');
@@ -533,6 +588,7 @@
       const picker = suffix === 'a' ? presetPickerA : presetPickerB;
       const chosen = picker.getSelected();
       if (!chosen) { showToast('presets not loaded yet'); return; }
+      vibrate(20);
       postJson('/api/pulse', {
         channel,
         time: parseInt($(`pulse-time-${suffix}`).value, 10) || 3,
@@ -543,6 +599,7 @@
     $(`trigger-custom-${suffix}`).addEventListener('click', () => {
       const waveform = $(`custom-waveform-${suffix}`).value.trim();
       if (!waveform) { showToast('enter a waveform first'); return; }
+      vibrate(20);
       postJson('/api/pulse', {
         channel,
         time: parseInt($(`pulse-time-${suffix}`).value, 10) || 3,
@@ -696,9 +753,10 @@
     });
 
     playPauseBtn.addEventListener('click', () => {
+      vibrate(20);
       postJson(`${base}/${playPauseBtn.dataset.action || 'play'}`);
     });
-    $(`playlist-stop-${suffix}`).addEventListener('click', () => postJson(`${base}/stop`));
+    $(`playlist-stop-${suffix}`).addEventListener('click', () => { vibrate(30); postJson(`${base}/stop`); });
 
     shuffleBtn.addEventListener('click', () => {
       postJson(`${base}/settings`, {

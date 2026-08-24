@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DG-LAB Control Panel</title>
+<meta name="theme-color" content="#080b12">
+<link rel="manifest" href="/assets/manifest.json">
+<link rel="icon" href="/assets/icons/icon-192.png">
+<link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
@@ -76,14 +80,24 @@
         <div class="qr-box" id="qr-box-v4"><span class="qr-placeholder">Waiting for controller id&hellip;</span></div>
         <div class="qr-meta">
           <span class="tag tag-v4">V4 &middot; recommended</span>
-          <div class="pair-link mono" id="pair-link-v4"></div>
+          <div class="pair-link-row">
+            <div class="pair-link mono" id="pair-link-v4"></div>
+            <button type="button" class="copy-btn" id="copy-link-v4" title="Copy pairing link" aria-label="Copy pairing link">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
         </div>
       </div>
       <div class="qr-wrap">
         <div class="qr-box" id="qr-box-v3"><span class="qr-placeholder">Waiting for controller id&hellip;</span></div>
         <div class="qr-meta">
           <span class="tag tag-v3">V3 &middot; legacy</span>
-          <div class="pair-link mono" id="pair-link-v3"></div>
+          <div class="pair-link-row">
+            <div class="pair-link mono" id="pair-link-v3"></div>
+            <button type="button" class="copy-btn" id="copy-link-v3" title="Copy pairing link" aria-label="Copy pairing link">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -195,6 +195,13 @@ dl.meta dd { margin: 0; word-break: break-all; display: flex; align-items: cente
 }
 .qr-meta { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
 .pair-link { font-size: 10.5px; color: var(--faint); word-break: break-all; max-width: 180px; line-height: 1.5; }
+.pair-link-row { display: flex; align-items: flex-start; gap: 6px; }
+.copy-btn {
+  flex: none; width: 22px; height: 22px; margin-top: 1px; border-radius: 6px; border: none;
+  background: none; color: var(--faint); display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.copy-btn:hover { color: var(--accent); }
+.copy-btn.copied { color: var(--ok); }
 
 button { font-family: inherit; cursor: pointer; }
 .btn {
