@@ -411,6 +411,13 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/limit` | Set/clear a channel's operator upper limit |
 | `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
 | `POST` | `/api/reconnect` | Force a fresh relay connection (new controller id/QR) |
+| `POST` | `/api/playlist/{channel}/items` | Add a pulse or gap entry to that channel's playlist |
+| `DELETE` | `/api/playlist/{channel}/items/{id}` | Remove one entry |
+| `POST` | `/api/playlist/{channel}/reorder` | Reorder entries |
+| `POST` | `/api/playlist/{channel}/settings` | Set shuffle / loop-playback |
+| `POST` | `/api/playlist/{channel}/play` | Start (or resume) playback |
+| `POST` | `/api/playlist/{channel}/pause` | Pause playback, keeping position |
+| `POST` | `/api/playlist/{channel}/stop` | Stop and reset to the start of the queue |
 
 ### `GET /events` (SSE)
 
@@ -432,6 +439,15 @@ every time anything changes. Each event's `data` is:
   "softLimitA": <number> | null,
   "softLimitB": <number> | null,
   "lastButtonAction": <0-9> | null,
+  "battery": <0-100> | null,
+  "channelAStatus": <0-4> | null,
+  "channelAStatusLabel": "no output" | "open circuit" | "normal" | "damaged" | "masked" | "unknown" | null,
+  "channelBStatus": <0-4> | null,
+  "channelBStatusLabel": "..." | null,
+  "channelAOverheat": <bool> | null,
+  "channelAOverheatPercent": <0-100> | null,
+  "channelBOverheat": <bool> | null,
+  "channelBOverheatPercent": <0-100> | null,
   "limitA": <number> | null,
   "limitB": <number> | null,
   "webhookUrl": "<string>" | null,
@@ -439,7 +455,9 @@ every time anything changes. Each event's `data` is:
   "qrSvg": "<svg>...</svg>" | null,
   "pairUrl": "https://www.dungeon-lab.com/app-download.php#DGLAB-SOCKET#ws://..." | null,
   "qrSvgV4": "<svg>...</svg>" | null,
-  "pairUrlV4": "https://dungeon-lab.cn/s/?v=1&action=socket&url=..." | null
+  "pairUrlV4": "https://dungeon-lab.cn/s/?v=1&action=socket&url=..." | null,
+  "playlistA": <PlaylistSnapshot, see below>,
+  "playlistB": <PlaylistSnapshot, see below>
 }
 ```
 
@@ -450,6 +468,20 @@ request's `Host` header (see [architecture.md](architecture.md) and the
 README's "Pairing over WiFi" section) — two browsers viewing the panel from
 different addresses can see different QR codes for the same underlying
 controller ids.
+
+`battery`/`channelAStatus`/`channelBStatus`/`channelAOverheat*`/`channelBOverheat*`
+are V4-only, and further Coyote-only within V4 (`dglab-kit` documents them
+under `COYOTE_020`/`COYOTE_030`'s `props`/`slotState`; other device types
+simply never report them, so these stay `null`) — see the [`data` schema
+section](#the-data-schema-real-dg-lab-4-apps-use). `battery` is `props.power`;
+`channelAStatus`/`channelBStatus` are `props.channelAStatus`/`channelBStatus`,
+decoded into `channelAStatusLabel`/`channelBStatusLabel` by
+`v4_client::channel_status_label`; the overheat fields come from
+`slotState.channelA/B.comfortLimit.overheat`/`overheatPercent`. Each field
+updates independently and is only ever overwritten by a snapshot/patch that
+actually includes it — a `slots.patch` delta that omits `channelAStatus`
+leaves the last-known value in place rather than clearing it — but all of
+them reset to `null` together when the V4 device disconnects.
 
 `activeProtocol` is which leg — if either — currently drives
 `strengthA`/`strengthB`/`softLimitA`/`softLimitB`/`lastButtonAction` and the
@@ -568,6 +600,113 @@ No body. Drops the panel's current V3 **and** V4 connections immediately
 (instead of waiting out the normal 2s reconnect backoff on each) and
 establishes fresh ones, yielding new controller ids and thus new pairing
 QRs on both. Always `200 OK`.
+
+### Playlists
+
+Each channel has its own independent queue of pulse/gap entries that plays
+through in order (or shuffled), optionally looping — an alternative to
+manually triggering one waveform at a time via `POST /api/pulse`. `{channel}`
+in every path below accepts the same spellings as elsewhere (`A`/`a`/`1`,
+`B`/`b`/`2`). All state lives in the panel process itself (`src/panel/playlist.rs`),
+independent of which protocol/device is currently active — a playlist can be
+built and even started before any device is paired; the runner (`src/panel/playlist_runner.rs`)
+sends each step's frame through the same active-target routing `POST
+/api/pulse` uses, and on failure (no device paired, relay not ready, or a
+custom waveform that isn't valid V4 frame-array format) just logs it and
+skips sending — the entry's resolved duration still elapses and playback
+advances to the next entry on its own clock either way, rather than getting
+stuck retrying.
+
+Playlist state is not fetched via any of these endpoints — it's only ever
+read from `/events`' `playlistA`/`playlistB` fields, each shaped:
+
+```json
+{
+  "entries": [
+    {
+      "id": "<uuid>",
+      "kind": "pulse" | "gap",
+      "label": "<preset label, or a truncated preview of custom waveform text>",
+      "waveform": "<preset id or raw custom string>" | null,
+      "waveformResolved": "<actual frame data, for drawing a preview>" | null,
+      "duration": {"mode": "fixed", "seconds": <number>} | {"mode": "random", "min": <number>, "max": <number>}
+    }
+  ],
+  "shuffle": <bool>,
+  "loopPlayback": <bool>,
+  "phase": "stopped" | "playing" | "paused",
+  "currentId": "<uuid of the entry currently running>" | null,
+  "remainingMs": <number> | null,
+  "currentDurationMs": <number> | null,
+  "totalEntries": <number>
+}
+```
+
+`waveform`/`waveformResolved` are `null` for a `"gap"` entry. `remainingMs`
+counts down within `currentDurationMs` (the concrete duration rolled for this
+run — the denominator a progress bar needs; distinct from `duration`, which
+for `"random"` is the configured range, not a resolved value). A silent gap
+is `phase: "playing"` with `currentId` pointing at the gap entry, not a
+separate phase — check `entries[].kind` for the currently-playing entry to
+tell the two apart.
+
+#### `POST /api/playlist/{channel}/items`
+
+```json
+// pulse entry
+{"kind": "pulse", "waveform": "<preset id or custom frame data>", "duration": {"mode": "fixed", "seconds": <number>} | {"mode": "random", "min": <number>, "max": <number>}}
+
+// gap entry
+{"kind": "gap", "duration": {"mode": "fixed", "seconds": <number>} | {"mode": "random", "min": <number>, "max": <number>}}
+```
+
+Appends to the end of that channel's queue — there's no separate insert-at
+endpoint; use `POST .../reorder` afterwards to move it. `200` with
+`{"id": "<uuid>"}` on success. `400` for an empty `waveform`, a `duration`
+below 1 second, or (`random`) `min > max`.
+
+#### `DELETE /api/playlist/{channel}/items/{id}`
+
+No body. `200` on success, `404` if no entry with that id exists on that
+channel's queue (including one already removed).
+
+#### `POST /api/playlist/{channel}/reorder`
+
+```json
+{"order": ["<uuid>", "<uuid>", "..."]}
+```
+
+`order` must name every entry currently in that channel's queue exactly
+once — anything else (a missing id, a duplicate, an id from the other
+channel) is rejected with `400` and the queue is left unchanged.
+
+#### `POST /api/playlist/{channel}/settings`
+
+```json
+{"shuffle": <bool>, "loopPlayback": <bool>}
+```
+
+Both fields are required (this replaces the whole settings pair, not a
+partial patch). `shuffle` randomizes play order each time playback starts
+from `Stopped` or wraps around; `loopPlayback` controls whether reaching the
+end of the queue wraps back to the start or stops. Always `200 OK`.
+
+#### `POST /api/playlist/{channel}/play`
+
+No body. Starts playback from the current position, or resumes a paused
+queue. `200` on success (including the idempotent case of calling it again
+while already playing — a no-op, not an error). `409` if the queue is empty.
+
+#### `POST /api/playlist/{channel}/pause`
+
+No body. Pauses in place — `remainingMs` on the current entry is preserved,
+not reset — so a subsequent `play` continues from where it left off, not
+from the top. Always `200 OK`, including if already paused or stopped.
+
+#### `POST /api/playlist/{channel}/stop`
+
+No body. Stops playback and resets position to the start of the queue (the
+next `play` starts from the first entry, unlike `pause`). Always `200 OK`.
 
 ---
 
