@@ -89,6 +89,15 @@ Environment variables, read at startup:
 
 ## Control panel
 
+![Control panel — desktop](docs/images/panel-desktop.png)
+
+<details>
+<summary>Mobile view</summary>
+
+<img src="docs/images/panel-mobile.png" alt="Control panel — mobile" width="360">
+
+</details>
+
 `http://<host>:40000/` shows:
 
 - **Two pairing QR codes**, side by side — one for V4 (recommended) and one for V3 (legacy) — each generated from the panel's own controller id on that protocol. Scanning either (or opening the plain link shown under it) connects the phone to that relay, pre-paired with the panel. The panel runs both relay connections at once, so it works with either DG-LAB APP version without you needing to know which protocol it speaks.
