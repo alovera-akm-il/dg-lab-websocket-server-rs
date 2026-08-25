@@ -119,20 +119,106 @@
     </div>
     <div class="row" style="margin-top:10px;">
       <input type="text" id="recipe-save-name" placeholder="Recipe name" style="flex:1; min-width:120px;">
-      <button class="btn small" id="recipe-save-btn">Save JSON below</button>
+      <button class="btn small" id="recipe-save-btn">Save</button>
+      <button class="btn small" id="recipe-clear-btn">Clear form</button>
     </div>
-    <textarea class="recipe-json mono" id="recipe-json" placeholder='{&#10;  "timer": {"durationSeconds": 1800},&#10;  "playlistA": {"template": "warmup-steady", "shuffle": false},&#10;  "rampA": {"profile": "linear", "from": 10, "to": 30, "overSeconds": 600}&#10;}'></textarea>
-    <div class="row" style="margin-top:10px;">
+
+    <div class="recipe-builder" id="recipe-builder">
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-timer-enable"> Timer</label>
+        <div class="recipe-section-fields" id="rb-timer-fields" hidden>
+          <div class="row">
+            <label class="field-label">Duration (min)</label><input type="number" id="rb-timer-duration" value="60" min="1">
+            <label class="field-label">Check-in (min)</label><input type="number" id="rb-timer-checkin" value="0" min="0">
+          </div>
+          <label class="checkbox-label"><input type="checkbox" id="rb-timer-autostop" checked> Stop playlists at end</label>
+          <div class="recipe-field-note">Phase gates aren't editable here &mdash; use the Python client for a recipe that needs them. Editing and resaving a recipe that already has gates keeps them as-is.</div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-playlist-a-enable"> Playlist A</label>
+        <div class="recipe-section-fields" id="rb-playlist-a-fields" hidden>
+          <div class="row">
+            <select id="rb-playlist-a-template" style="flex:1;"></select>
+            <label class="checkbox-label"><input type="checkbox" id="rb-playlist-a-shuffle"> Shuffle</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-playlist-b-enable"> Playlist B</label>
+        <div class="recipe-section-fields" id="rb-playlist-b-fields" hidden>
+          <div class="row">
+            <select id="rb-playlist-b-template" style="flex:1;"></select>
+            <label class="checkbox-label"><input type="checkbox" id="rb-playlist-b-shuffle"> Shuffle</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-ramp-a-enable"> Ramp A</label>
+        <div class="recipe-section-fields" id="rb-ramp-a-fields" hidden>
+          <div class="mode-toggle" id="rb-ramp-a-toggle">
+            <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
+            <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
+            <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
+          </div>
+          <div class="row" id="rb-ramp-a-linear">
+            <label class="field-label">From</label><input type="number" id="rb-ramp-a-from" value="10" min="0">
+            <label class="field-label">To</label><input type="number" id="rb-ramp-a-to" value="40" min="0">
+            <label class="field-label">Over (s)</label><input type="number" id="rb-ramp-a-over" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-a-random-walk" hidden>
+            <label class="field-label">Base</label><input type="number" id="rb-ramp-a-base" value="30" min="0">
+            <label class="field-label">&plusmn;</label><input type="number" id="rb-ramp-a-variance" value="15" min="0">
+            <label class="field-label">Step (s)</label><input type="number" id="rb-ramp-a-step" value="30" min="1">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-a-rw-duration" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-a-hold" hidden>
+            <label class="field-label">Value</label><input type="number" id="rb-ramp-a-hold-value" value="25" min="0">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-a-hold-duration" value="300" min="1">
+          </div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-ramp-b-enable"> Ramp B</label>
+        <div class="recipe-section-fields" id="rb-ramp-b-fields" hidden>
+          <div class="mode-toggle" id="rb-ramp-b-toggle">
+            <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
+            <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
+            <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
+          </div>
+          <div class="row" id="rb-ramp-b-linear">
+            <label class="field-label">From</label><input type="number" id="rb-ramp-b-from" value="10" min="0">
+            <label class="field-label">To</label><input type="number" id="rb-ramp-b-to" value="40" min="0">
+            <label class="field-label">Over (s)</label><input type="number" id="rb-ramp-b-over" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-b-random-walk" hidden>
+            <label class="field-label">Base</label><input type="number" id="rb-ramp-b-base" value="30" min="0">
+            <label class="field-label">&plusmn;</label><input type="number" id="rb-ramp-b-variance" value="15" min="0">
+            <label class="field-label">Step (s)</label><input type="number" id="rb-ramp-b-step" value="30" min="1">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-b-rw-duration" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-b-hold" hidden>
+            <label class="field-label">Value</label><input type="number" id="rb-ramp-b-hold-value" value="25" min="0">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-b-hold-duration" value="300" min="1">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
       <button class="btn small" id="session-pause-all">Pause everything</button>
       <button class="btn small" id="session-resume-all">Resume everything</button>
       <button class="btn small danger" id="recipe-stop-all">Emergency stop everything</button>
     </div>
     <div class="note">
       A recipe composes a session timer, per-channel playlists (by saved template name), and per-channel ramps into
-      one Start button. There's no in-panel recipe builder &mdash; author the JSON above (same shape a saved recipe
-      returns from its own GET) and save it, or manage recipes from the Python client.
-      <strong>Pause everything</strong> zeroes both channels' strength (restored on resume) and pauses
-      playlists/ramps/timer; <strong>Emergency stop</strong> is not resumable.
+      one Start button. Check a section on to include it. Playlist template lists refresh from
+      <code>GET /api/templates</code> when this card loads. <strong>Pause everything</strong> zeroes both channels'
+      strength (restored on resume) and pauses playlists/ramps/timer; <strong>Emergency stop</strong> is not resumable.
     </div>
   </section>
   <section class="card card-in" style="animation-delay: 120ms;">

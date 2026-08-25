@@ -643,12 +643,210 @@
 
   // -- recipes: named session presets, not part of the SSE snapshot
   // (config, not live device state) -- fetched once on load and again
-  // after Save/Start/Delete, same treatment as button mapping above ---
+  // after Save/Start/Delete/Edit, same treatment as button mapping
+  // above. A visual builder, not a raw JSON editor: one toggle-able
+  // section per optional recipe piece (timer, playlistA/B, rampA/B) --
+  // phase gates are the one thing it doesn't expose (see the note in
+  // the timer section's markup), same "not everything" scope call
+  // button mapping already made for shortPress/doublePress/longPress. -
 
   const recipeListEl = $('recipe-list');
   const recipeEmptyEl = $('recipe-empty');
-  const recipeJsonTextarea = $('recipe-json');
   const recipeSaveNameInput = $('recipe-save-name');
+
+  function rbIntVal(id, fallback) {
+    const v = parseInt($(id).value, 10);
+    return Number.isFinite(v) ? v : fallback;
+  }
+
+  // A ramp profile sub-form for the recipe builder -- the same
+  // profile-toggle + conditional-fields pattern `makeRampController`
+  // uses for the live Strength card, but without anything live (no
+  // Start/Cancel, no progress readout): this only ever captures the
+  // operator's chosen profile *parameters* as a plain object for the
+  // recipe JSON, the same shape `POST /api/ramp` itself takes.
+  function makeRampProfilePicker(suffix) {
+    const toggle = $(`rb-ramp-${suffix}-toggle`);
+    const fieldsByProfile = {
+      linear: $(`rb-ramp-${suffix}-linear`),
+      'random-walk': $(`rb-ramp-${suffix}-random-walk`),
+      hold: $(`rb-ramp-${suffix}-hold`),
+    };
+    let selectedProfile = 'linear';
+
+    toggle.querySelectorAll('.mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        selectedProfile = btn.dataset.rampProfile;
+        toggle.querySelectorAll('.mode-btn').forEach((b) => b.classList.toggle('active', b === btn));
+        Object.entries(fieldsByProfile).forEach(([profile, el]) => {
+          el.hidden = profile !== selectedProfile;
+        });
+      });
+    });
+
+    return {
+      buildBody() {
+        if (selectedProfile === 'linear') {
+          return {
+            profile: 'linear',
+            from: rbIntVal(`rb-ramp-${suffix}-from`, 0),
+            to: rbIntVal(`rb-ramp-${suffix}-to`, 0),
+            overSeconds: rbIntVal(`rb-ramp-${suffix}-over`, 1),
+          };
+        }
+        if (selectedProfile === 'random-walk') {
+          return {
+            profile: 'random-walk',
+            base: rbIntVal(`rb-ramp-${suffix}-base`, 0),
+            variance: rbIntVal(`rb-ramp-${suffix}-variance`, 0),
+            stepSeconds: rbIntVal(`rb-ramp-${suffix}-step`, 1),
+            durationSeconds: rbIntVal(`rb-ramp-${suffix}-rw-duration`, 1),
+          };
+        }
+        return {
+          profile: 'hold',
+          value: rbIntVal(`rb-ramp-${suffix}-hold-value`, 0),
+          durationSeconds: rbIntVal(`rb-ramp-${suffix}-hold-duration`, 1),
+        };
+      },
+      setFromRamp(ramp) {
+        const btn = toggle.querySelector(`[data-ramp-profile="${ramp.profile}"]`);
+        if (btn) btn.click();
+        if (ramp.profile === 'linear') {
+          $(`rb-ramp-${suffix}-from`).value = ramp.from;
+          $(`rb-ramp-${suffix}-to`).value = ramp.to;
+          $(`rb-ramp-${suffix}-over`).value = ramp.overSeconds;
+        } else if (ramp.profile === 'random-walk') {
+          $(`rb-ramp-${suffix}-base`).value = ramp.base;
+          $(`rb-ramp-${suffix}-variance`).value = ramp.variance;
+          $(`rb-ramp-${suffix}-step`).value = ramp.stepSeconds;
+          $(`rb-ramp-${suffix}-rw-duration`).value = ramp.durationSeconds;
+        } else if (ramp.profile === 'hold') {
+          $(`rb-ramp-${suffix}-hold-value`).value = ramp.value;
+          $(`rb-ramp-${suffix}-hold-duration`).value = ramp.durationSeconds;
+        }
+      },
+    };
+  }
+
+  // Phase gates aren't editable in this builder (see the note in the
+  // timer section's markup), but editing-and-resaving a recipe that
+  // already has some must not silently drop them -- stashed here from
+  // whatever was loaded, and re-attached unless the form is cleared.
+  let editingPhaseGates = null;
+
+  const rbRampA = makeRampProfilePicker('a');
+  const rbRampB = makeRampProfilePicker('b');
+
+  // Section enable checkboxes just show/hide their fields -- an
+  // unchecked section is simply omitted from the built recipe.
+  ['timer', 'playlist-a', 'playlist-b', 'ramp-a', 'ramp-b'].forEach((section) => {
+    const enableEl = $(`rb-${section}-enable`);
+    const fieldsEl = $(`rb-${section}-fields`);
+    enableEl.addEventListener('change', () => { fieldsEl.hidden = !enableEl.checked; });
+  });
+
+  function loadTemplateNamesForRecipeBuilder() {
+    fetch('/api/templates').then((r) => r.json()).then((names) => {
+      [$('rb-playlist-a-template'), $('rb-playlist-b-template')].forEach((select) => {
+        const previous = select.value;
+        select.innerHTML = names.length
+          ? names.map((n) => `<option value="${n}">${n}</option>`).join('')
+          : '<option value="" disabled>No templates saved</option>';
+        // A background refresh (e.g. from saving a template elsewhere)
+        // must not silently swap out a selection mid-edit -- if the
+        // previously-selected name isn't in the fresh list (including a
+        // "not found" placeholder from `ensureTemplateOption`), keep it
+        // rather than falling back to whatever option is now first.
+        if (previous) {
+          ensureTemplateOption(select, previous);
+          select.value = previous;
+        }
+      });
+    }).catch(() => showToast('failed to load template names'));
+  }
+
+  function buildRecipeFromForm() {
+    const recipe = {};
+    if ($('rb-timer-enable').checked) {
+      recipe.timer = {
+        durationSeconds: rbIntVal('rb-timer-duration', 60) * 60,
+        checkInEverySeconds: rbIntVal('rb-timer-checkin', 0) * 60,
+        autoStopPlaylistsAtEnd: $('rb-timer-autostop').checked,
+      };
+      if (editingPhaseGates) recipe.timer.phaseGates = editingPhaseGates;
+    }
+    if ($('rb-playlist-a-enable').checked) {
+      recipe.playlistA = { template: $('rb-playlist-a-template').value, shuffle: $('rb-playlist-a-shuffle').checked };
+    }
+    if ($('rb-playlist-b-enable').checked) {
+      recipe.playlistB = { template: $('rb-playlist-b-template').value, shuffle: $('rb-playlist-b-shuffle').checked };
+    }
+    if ($('rb-ramp-a-enable').checked) recipe.rampA = rbRampA.buildBody();
+    if ($('rb-ramp-b-enable').checked) recipe.rampB = rbRampB.buildBody();
+    return recipe;
+  }
+
+  function clearRecipeForm() {
+    recipeSaveNameInput.value = '';
+    editingPhaseGates = null;
+    ['timer', 'playlist-a', 'playlist-b', 'ramp-a', 'ramp-b'].forEach((section) => {
+      const enableEl = $(`rb-${section}-enable`);
+      enableEl.checked = false;
+      enableEl.dispatchEvent(new Event('change'));
+    });
+  }
+
+  // Setting a <select>'s value to a name that isn't one of its options
+  // silently no-ops (the dropdown falls back to whatever's first) --
+  // without this, editing a recipe whose referenced template was since
+  // deleted (or just hasn't loaded yet) would show the wrong template
+  // selected, and saving would silently retarget the recipe to it.
+  // Injecting a placeholder option instead keeps the original name
+  // visible and intact; if the template really doesn't exist, starting
+  // the recipe still fails with a clear error from the server.
+  function ensureTemplateOption(select, name) {
+    if (!name || [...select.options].some((o) => o.value === name)) return;
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = `${name} (not found)`;
+    select.appendChild(opt);
+  }
+
+  function loadRecipeIntoForm(name, recipe) {
+    clearRecipeForm();
+    recipeSaveNameInput.value = name;
+    if (recipe.timer) {
+      $('rb-timer-enable').checked = true;
+      $('rb-timer-duration').value = Math.round(recipe.timer.durationSeconds / 60);
+      $('rb-timer-checkin').value = Math.round((recipe.timer.checkInEverySeconds || 0) / 60);
+      $('rb-timer-autostop').checked = recipe.timer.autoStopPlaylistsAtEnd !== false;
+      editingPhaseGates = recipe.timer.phaseGates && recipe.timer.phaseGates.length ? recipe.timer.phaseGates : null;
+    }
+    if (recipe.playlistA) {
+      $('rb-playlist-a-enable').checked = true;
+      ensureTemplateOption($('rb-playlist-a-template'), recipe.playlistA.template);
+      $('rb-playlist-a-template').value = recipe.playlistA.template;
+      $('rb-playlist-a-shuffle').checked = !!recipe.playlistA.shuffle;
+    }
+    if (recipe.playlistB) {
+      $('rb-playlist-b-enable').checked = true;
+      ensureTemplateOption($('rb-playlist-b-template'), recipe.playlistB.template);
+      $('rb-playlist-b-template').value = recipe.playlistB.template;
+      $('rb-playlist-b-shuffle').checked = !!recipe.playlistB.shuffle;
+    }
+    if (recipe.rampA) {
+      $('rb-ramp-a-enable').checked = true;
+      rbRampA.setFromRamp(recipe.rampA);
+    }
+    if (recipe.rampB) {
+      $('rb-ramp-b-enable').checked = true;
+      rbRampB.setFromRamp(recipe.rampB);
+    }
+    ['timer', 'playlist-a', 'playlist-b', 'ramp-a', 'ramp-b'].forEach((section) => {
+      $(`rb-${section}-enable`).dispatchEvent(new Event('change'));
+    });
+  }
 
   function loadRecipes() {
     fetch('/api/session/recipes').then((r) => r.json()).then((names) => {
@@ -660,6 +858,7 @@
         row.innerHTML =
           `<span class="recipe-name">${name}</span>` +
           '<button class="btn small primary" data-recipe-start>Start</button>' +
+          '<button class="btn small" data-recipe-edit>Edit</button>' +
           '<button class="btn small" data-recipe-delete>Delete</button>';
         row.querySelector('[data-recipe-start]').addEventListener('click', () => {
           fetch(`/api/session/recipes/${encodeURIComponent(name)}/start`, { method: 'POST' })
@@ -671,6 +870,11 @@
               }
             }).catch((e) => showToast(e.message || 'failed to start recipe'));
         });
+        row.querySelector('[data-recipe-edit]').addEventListener('click', () => {
+          fetch(`/api/session/recipes/${encodeURIComponent(name)}`).then((r) => r.json())
+            .then((recipe) => loadRecipeIntoForm(name, recipe))
+            .catch(() => showToast('failed to load recipe'));
+        });
         row.querySelector('[data-recipe-delete]').addEventListener('click', () => {
           fetch(`/api/session/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' })
             .then((res) => { if (res.ok) loadRecipes(); else showToast('failed to delete recipe'); });
@@ -680,16 +884,12 @@
     }).catch(() => showToast('failed to load recipes'));
   }
 
+  $('recipe-clear-btn').addEventListener('click', clearRecipeForm);
+
   $('recipe-save-btn').addEventListener('click', () => {
     const name = recipeSaveNameInput.value.trim();
     if (!name) { showToast('recipe name is required'); return; }
-    let recipe;
-    try {
-      recipe = JSON.parse(recipeJsonTextarea.value || '{}');
-    } catch (e) {
-      showToast('invalid JSON -- fix it before saving');
-      return;
-    }
+    const recipe = buildRecipeFromForm();
     fetch(`/api/session/recipes/${encodeURIComponent(name)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -700,8 +900,6 @@
         try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
         throw new Error(message);
       }
-      recipeSaveNameInput.value = '';
-      recipeJsonTextarea.value = '';
       loadRecipes();
     }).catch((e) => showToast(e.message || 'failed to save recipe'));
   });
@@ -1490,6 +1688,10 @@
       templatePickerA.populate(names);
       templatePickerB.populate(names);
     });
+    // Also keeps the recipe builder's playlistA/B template dropdowns
+    // (defined earlier in this file) in sync -- so saving a new
+    // template mid-session shows up there without a page reload.
+    loadTemplateNamesForRecipeBuilder();
   }
 
   function wireTemplateChannel(suffix, channel, picker) {

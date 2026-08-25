@@ -591,10 +591,10 @@ rather have the full visual mapper — it's a bigger but buildable option.
 `recipes.json` under `PANEL_DATA_DIR`), wired into `src/panel/state.rs`
 (`recipe_names`/`recipe_get`/`recipe_save`/`recipe_delete`, mirroring
 Templates exactly) and `src/panel/handler.rs` (the six endpoints below plus
-`POST /api/session/stop`), with a minimal Recipes card in
-`src/panel/assets/index.html` (list + Start/Delete buttons, a raw-JSON
-save form, and the emergency-stop button) paired next to Session Timer, per
-the mockup. Matches the design here with two deliberate trims, both
+`POST /api/session/stop`), with a Recipes card in
+`src/panel/assets/index.html` (list + Start/Edit/Delete buttons, plus
+the emergency-stop/pause/resume buttons) paired next to Session Timer,
+per the mockup. Matches the design here with two deliberate trims, both
 documented inline in `recipe.rs` and in `docs/api.md`'s "Session presets /
 recipes" section: there's no `buttonMap` field (Feature 5 has one active
 map, not a named collection to reference by name), and saving a recipe
@@ -606,6 +606,19 @@ anything, so a bad recipe fails cleanly rather than partially applying.
 Unit tests (round-trip serialization matching the request's own JSON
 shape, and `validate_self`) are in place and passing; integration-level/
 live-UI verification have not been run yet.
+
+**UI revised after initial ship:** the original raw-JSON-textarea UI was
+later replaced with a visual builder -- a toggle-able section per
+optional recipe piece (timer, playlist A/B, ramp A/B), each its own
+sub-form (playlist sections get a live template-name dropdown from
+`GET /api/templates` instead of a free-typed name; ramp sections reuse
+the same profile-picker fields the Strength card's live ramp config
+uses). One scope cut: phase gates aren't editable in the builder (no
+gate-list sub-editor was built) -- editing and resaving a recipe that
+already has some preserves them as-is rather than dropping them, but
+adding/removing gates still needs the Python client or a raw `POST`.
+`POST /api/session/recipes/{name}` itself is unchanged -- still an
+explicit JSON body; only what edits that body in-browser changed.
 
 Combine templates + ramps + timer into one named session definition.
 
