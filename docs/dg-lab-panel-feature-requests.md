@@ -845,7 +845,51 @@ Based on tonight: perineum at 25 feels roughly equivalent to inner thigh at 50. 
 
 ## 10. True Session Pause/Resume with State Preservation
 
-**Status:** Proposed.
+**Status: implemented**, per Mara's answers below. `POST /api/session/pause`/
+`resume` in `src/panel/handler.rs` compose playlist-pause, session-timer-
+pause, and a new ramp-pause capability (`src/panel/ramp.rs`'s
+`RampSnapshot.paused` + `RunnerTick::resume_from`, `PanelState::ramp_pause`/
+`ramp_resume`) with an active strength zero-and-restore, all as answered.
+See `docs/api.md`'s "Global pause/resume" section for the final reference.
+
+**Correction to answer #4** ("deleted template while paused"): this
+scenario can't actually occur with the current architecture. A playlist's
+queue is fully in-memory once loaded (`PlaylistQueue.entries()`) —
+pausing/resuming playback (`playlist_pause`/`playlist_play`) never
+re-resolves a template by name, so there is nothing for a deleted
+template to invalidate mid-pause. This was a premise in my own
+clarifying question, not something the implementation needed to work
+around — no warning-logging or skip-on-resume behavior was built for it,
+since there's no code path that would ever need it.
+
+**Two safety bugs found and fixed while implementing** (not present in
+the answers — found by tracing through the composed behavior):
+
+1. `POST /api/session/stop` (emergency stop) and button-mapped
+   `emergency_clear` didn't clear a pending `POST /api/session/pause`
+   strength capture. Sequence: pause (strength captured, zeroed) →
+   emergency stop (channels cleared, but the capture was untouched) →
+   later, an unrelated `POST /api/session/resume` call → the stale
+   pre-pause value gets restored, silently un-zeroing a channel that was
+   supposed to be *finally* stopped. Fixed by having both emergency-stop
+   paths also end the pending capture, matching the "not resumable"
+   framing in `docs/api.md`.
+2. A manual strength override during a pause (`POST /api/strength`, a
+   button-mapped strength action, or starting a fresh `POST /api/ramp`)
+   didn't end the pending capture either — a later resume would silently
+   overwrite the operator's deliberate manual adjustment (or a fresh
+   ramp's own progress) with the stale pre-pause value. Fixed by having
+   all of those "take over" the pending capture the same way they
+   already take over an active ramp.
+
+Unit tests cover `RunnerTick::resume_from` (exact continuation for
+`linear`/`hold`, the `random-walk` approximation), `PanelState`'s
+`ramp_pause`/`ramp_resume`/`playlist_is_paused`/pre-pause-strength
+accessors (including a regression test for bug 2 above), matching the
+rest of this codebase; `handler.rs`/`button_map.rs` have no direct unit
+tests of their own (see Features 7-9's notes) so bug 1's fix is
+exercised only by inspection. Integration-level/live-UI verification
+have not been run yet.
 
 **API:**
 

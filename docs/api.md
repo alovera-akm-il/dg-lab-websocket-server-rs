@@ -420,6 +420,8 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/session/log-config` | Configure the file-based event log |
 | `POST` | `/api/session/start` | Force a fresh event-log session file |
 | `POST` | `/api/session/stop` | Emergency stop: clear both channels, stop playlists/ramps/timer |
+| `POST` | `/api/session/pause` | Pause everything: zero both channels, pause playlists/ramps/timer |
+| `POST` | `/api/session/resume` | Resume everything `POST /api/session/pause` paused |
 | `POST` | `/api/session/checkin` | Log a subjective check-in (color/arousal/discomfort/notes) |
 | `GET` | `/api/session/recipes` | List saved recipe names |
 | `GET` | `/api/session/recipes/{name}` | Get one recipe by name |
@@ -745,6 +747,7 @@ every single press.
   "current": 23,
   "target": 40,
   "remainingSeconds": 340,
+  "paused": false,
   "from": 10, "to": 40, "overSeconds": 600
 }
 ```
@@ -759,6 +762,10 @@ redraw its config without having cached the original `POST /api/ramp`
 body — same "merge whatever's relevant for this event" shape
 [webhook payloads](#webhook-payloads) already use, rather than a fixed set
 of always-present-but-often-null fields.
+
+`paused` (Feature 10) is `true` while `POST /api/session/pause` has this
+ramp frozen — the object stays present (not `null`) so the UI keeps
+showing the frozen readout, rather than looking like the ramp ended.
 
 ### Session timer
 
@@ -1355,7 +1362,71 @@ stops both channels' playlists, cancels both channels' ramps, sends a
 clear frame to each channel (best-effort — silently skipped if no device
 is currently paired), and ends the session timer if one is running.
 Always `200 OK` — nothing here reports partial failure, since every step
-is unconditional.
+is unconditional. **Not resumable** — see the next section on how this
+differs from `POST /api/session/pause`.
+
+### Global pause/resume
+
+Feature 10 — a temporary, resumable interruption of an entire session in
+one call, distinct from `POST /api/session/stop` above (final, not
+resumable). Composes three already-existing per-subsystem pauses
+unchanged (`playlist_pause`, the session timer's own pause, and a new
+ramp-pause capability — `src/panel/ramp.rs`/`ramp_runner.rs` had none
+before this), plus a new safety-critical piece: actively zeroing both
+channels' strength, since none of the other three touch strength at all.
+
+#### `POST /api/session/pause`
+
+No body. In order:
+
+1. Pauses both channels' playlists and any active ramps, and the session
+   timer, if running — each is a no-op if that piece isn't currently
+   active.
+2. For each channel with a known current strength: records it (for
+   `POST /api/session/resume` to restore) and sends a raw `Set(0)`
+   command directly to the wire — **bypassing calibration entirely**,
+   since the goal is a guaranteed *physical* zero, not a calibrated
+   logical one that might not actually be zero on the wire. Best-effort
+   — silently skipped per channel if no device is reachable, or if that
+   channel's strength isn't known yet.
+
+Calling this twice in a row without an intervening resume is safe: the
+second call's strength capture is a no-op (it won't overwrite the
+original pre-pause value with the `0` it just sent), and the three
+per-subsystem pauses are already idempotent. Always `200 OK`.
+
+#### `POST /api/session/resume`
+
+No body. Reverses `POST /api/session/pause`, in the documented order:
+restores each channel's recorded pre-pause strength first (also
+bypassing calibration, for the same reason), *then* resumes
+playlists/ramps/timer — only for whatever was actually paused (starting
+something that was merely stopped, not paused, is `playlist_play`'s job,
+not this endpoint's). Always `200 OK`, including when nothing was
+paused.
+
+**A manual command "takes over" and ends the paused cycle for that piece
+early** — a manual `POST /api/strength` call, a button-mapped strength
+action, or starting a fresh ramp with `POST /api/ramp` on a channel that
+has a pending pause capture all discard that capture, so a later
+`POST /api/session/resume` can't silently overwrite a deliberate manual
+adjustment (or a fresh ramp's own progress) with the stale pre-pause
+value. `POST /api/session/stop` and button-mapped `emergency_clear` do
+the same, for the same reason `POST /api/session/stop` is documented as
+"not resumable" above.
+
+**Ramp resume is an approximation for `random-walk`.** The runner task
+that owns a ramp's exact stepping state exits on pause (see
+`ramp_runner::run`'s docs); resuming reconstructs a starting point from
+the last known snapshot instead of asking that (by-then-gone) task for
+its exact internal state. For `linear`/`hold` this is exact (their value
+is a pure function of elapsed time). For `random-walk`, the walk re-rolls
+immediately from wherever it was, rather than replaying the exact
+original roll schedule — see `ramp::RunnerTick::resume_from`.
+
+**Not persisted across a restart**, unlike templates/recipes/calibration
+— if the panel restarts mid-pause, that's effectively an emergency stop
+(both channels already at `0`; nothing to resume into).
 
 ---
 
