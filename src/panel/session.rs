@@ -25,8 +25,11 @@
 
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PhaseGate {
+    #[serde(rename = "atSeconds")]
     pub at_seconds: u32,
     pub label: String,
 }
@@ -54,14 +57,22 @@ pub struct Checkpoint {
 
 const ENDING_WARNING_SECONDS: u32 = 300;
 
-#[derive(Debug, Clone)]
+/// Directly (de)serializable -- matches `POST /api/session/timer`'s body
+/// shape exactly, so `handler::post_session_timer` and `recipe.rs` (a
+/// recipe's `timer` field) can both use this type as-is instead of
+/// each defining their own parallel wire shape.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
+    #[serde(rename = "durationSeconds")]
     pub duration_seconds: u32,
     /// `0` disables recurring check-ins entirely (rather than being an
     /// error -- a session with only phase gates and no periodic
     /// check-in is a legitimate configuration).
+    #[serde(rename = "checkInEverySeconds", default)]
     pub check_in_every_seconds: u32,
+    #[serde(rename = "phaseGates", default)]
     pub phase_gates: Vec<PhaseGate>,
+    #[serde(rename = "autoStopPlaylistsAtEnd", default)]
     pub auto_stop_playlists_at_end: bool,
 }
 

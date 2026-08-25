@@ -36,6 +36,7 @@ use super::button_map::{self, ButtonAction, ButtonMap};
 use super::event_log::{EventLogConfig, EventLogMsg};
 use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
 use super::ramp::{RampProfile, RampSnapshot};
+use super::recipe::{self, Recipe};
 use super::session::{self, SessionConfig, SessionSnapshot, SessionTimer};
 use super::templates::{self, Template};
 use super::webhook;
@@ -195,6 +196,10 @@ struct Inner {
     /// Configurable button mapping -- like templates, survives a
     /// process restart (see [`super::button_map`]/[`super::persistence`]).
     button_map: ButtonMap,
+
+    /// Named session presets -- like templates, survives a process
+    /// restart (see [`super::recipe`]/[`super::persistence`]).
+    recipes: HashMap<String, Recipe>,
 }
 
 pub struct Snapshot {
@@ -299,6 +304,7 @@ impl PanelState {
                 session: SessionTimer::new(),
                 templates: templates::load_all(),
                 button_map: button_map::load(),
+                recipes: recipe::load_all(),
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
@@ -1137,6 +1143,44 @@ impl PanelState {
         };
         if removed {
             templates::save_all(&snapshot);
+        }
+        removed
+    }
+
+    // ---- recipes ----------------------------------------------------------
+
+    pub fn recipe_names(&self) -> Vec<String> {
+        let inner = self.inner.lock().unwrap();
+        let mut names: Vec<String> = inner.recipes.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn recipe_get(&self, name: &str) -> Option<Recipe> {
+        self.inner.lock().unwrap().recipes.get(name).cloned()
+    }
+
+    /// Inserts or overwrites (upsert, same as [`Self::template_save`])
+    /// and persists the whole store to disk outside the lock.
+    pub fn recipe_save(&self, recipe: Recipe) {
+        let snapshot = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.recipes.insert(recipe.name.clone(), recipe);
+            inner.recipes.clone()
+        };
+        super::recipe::save_all(&snapshot);
+    }
+
+    /// Returns whether a recipe with that name existed. Persists the
+    /// whole store to disk (outside the lock) if it did.
+    pub fn recipe_delete(&self, name: &str) -> bool {
+        let (removed, snapshot) = {
+            let mut inner = self.inner.lock().unwrap();
+            let removed = inner.recipes.remove(name).is_some();
+            (removed, inner.recipes.clone())
+        };
+        if removed {
+            super::recipe::save_all(&snapshot);
         }
         removed
     }

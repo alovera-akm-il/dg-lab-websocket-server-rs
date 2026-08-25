@@ -25,6 +25,7 @@ use super::button_map::ButtonMap;
 use super::config::Config;
 use super::event_log::EventLogConfig;
 use super::ramp::{self, RampProfile};
+use super::recipe::{Recipe, RecipePlaylist};
 use super::session::{self, SessionConfig};
 use super::state::{ActiveTarget, PanelState, Snapshot};
 use super::{
@@ -65,6 +66,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/session/end", post(post_session_end))
         .route("/api/session/log-config", post(post_session_log_config))
         .route("/api/session/start", post(post_session_start))
+        .route("/api/session/stop", post(post_session_stop_all))
+        .route("/api/session/recipes", get(get_recipes))
+        .route(
+            "/api/session/recipes/{name}",
+            get(get_recipe).post(post_recipe).delete(delete_recipe),
+        )
+        .route("/api/session/recipes/{name}/start", post(post_recipe_start))
         .route("/api/button-map", get(get_button_map).post(post_button_map))
         .route("/api/webhook", post(post_webhook))
         .route("/api/reconnect", post(post_reconnect))
@@ -563,72 +571,14 @@ async fn post_limit(State(state): State<AppState>, Json(body): Json<LimitBody>) 
 struct RampRequestBody {
     channel: String,
     #[serde(flatten)]
-    profile: RampProfileBody,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "profile", rename_all = "kebab-case")]
-enum RampProfileBody {
-    Linear {
-        from: i64,
-        to: i64,
-        #[serde(rename = "overSeconds")]
-        over_seconds: u32,
-    },
-    RandomWalk {
-        base: i64,
-        variance: i64,
-        #[serde(rename = "stepSeconds")]
-        step_seconds: u32,
-        #[serde(rename = "durationSeconds")]
-        duration_seconds: u32,
-    },
-    Hold {
-        value: i64,
-        #[serde(rename = "durationSeconds")]
-        duration_seconds: u32,
-    },
-}
-
-impl RampProfileBody {
-    fn into_profile(self) -> RampProfile {
-        match self {
-            RampProfileBody::Linear {
-                from,
-                to,
-                over_seconds,
-            } => RampProfile::Linear {
-                from,
-                to,
-                over_seconds,
-            },
-            RampProfileBody::RandomWalk {
-                base,
-                variance,
-                step_seconds,
-                duration_seconds,
-            } => RampProfile::RandomWalk {
-                base,
-                variance,
-                step_seconds,
-                duration_seconds,
-            },
-            RampProfileBody::Hold {
-                value,
-                duration_seconds,
-            } => RampProfile::Hold {
-                value,
-                duration_seconds,
-            },
-        }
-    }
+    profile: RampProfile,
 }
 
 async fn post_ramp(State(state): State<AppState>, Json(body): Json<RampRequestBody>) -> Response {
     let Some(channel) = commands::parse_channel(&body.channel) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid channel");
     };
-    let profile = body.profile.into_profile();
+    let profile = body.profile;
     if let Err(message) = profile.validate() {
         return error_response(StatusCode::BAD_REQUEST, message);
     }
@@ -683,42 +633,10 @@ async fn post_ramp_stop(State(state): State<AppState>, Json(body): Json<RampStop
 
 // ---- session timer --------------------------------------------------
 
-#[derive(Deserialize)]
-struct PhaseGateBody {
-    #[serde(rename = "atSeconds")]
-    at_seconds: u32,
-    label: String,
-}
-
-#[derive(Deserialize)]
-struct SessionTimerBody {
-    #[serde(rename = "durationSeconds")]
-    duration_seconds: u32,
-    #[serde(rename = "checkInEverySeconds", default)]
-    check_in_every_seconds: u32,
-    #[serde(rename = "phaseGates", default)]
-    phase_gates: Vec<PhaseGateBody>,
-    #[serde(rename = "autoStopPlaylistsAtEnd", default)]
-    auto_stop_playlists_at_end: bool,
-}
-
 async fn post_session_timer(
     State(state): State<AppState>,
-    Json(body): Json<SessionTimerBody>,
+    Json(config): Json<SessionConfig>,
 ) -> Response {
-    let config = SessionConfig {
-        duration_seconds: body.duration_seconds,
-        check_in_every_seconds: body.check_in_every_seconds,
-        phase_gates: body
-            .phase_gates
-            .into_iter()
-            .map(|g| session::PhaseGate {
-                at_seconds: g.at_seconds,
-                label: g.label,
-            })
-            .collect(),
-        auto_stop_playlists_at_end: body.auto_stop_playlists_at_end,
-    };
     if let Err(message) = config.validate() {
         return error_response(StatusCode::BAD_REQUEST, &message);
     }
@@ -781,6 +699,208 @@ async fn post_session_end(State(state): State<AppState>) -> Response {
             state.panel.playlist_stop(Channel::B);
         }
     }
+    StatusCode::OK.into_response()
+}
+
+/// Stops everything on both channels in one call: playlists, ramps, a
+/// clear frame to each channel (best-effort -- silently skipped if no
+/// device is currently paired), and the session timer. An emergency
+/// "panic button" endpoint, so every step is unconditional and nothing
+/// here reports partial failure.
+async fn post_session_stop_all(State(state): State<AppState>) -> Response {
+    state.panel.playlist_stop(Channel::A);
+    state.panel.playlist_stop(Channel::B);
+    state.panel.ramp_cancel(Channel::A);
+    state.panel.ramp_cancel(Channel::B);
+    if let Ok((target, tx)) = state.panel.active_target_and_outbound() {
+        for channel in [Channel::A, Channel::B] {
+            let frame = match &target {
+                ActiveTarget::V3 {
+                    controller_id,
+                    device_id,
+                } => commands::clear_frame(controller_id, device_id, channel),
+                ActiveTarget::V4 { device_id, slot_id } => {
+                    v4_commands::clear_frame(device_id, slot_id, channel)
+                }
+            };
+            let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+        }
+    }
+    if let Some((config, elapsed)) = state.panel.session_stop() {
+        let remaining = config.duration_seconds.saturating_sub(elapsed);
+        state.panel.log_with(
+            "Session timer ended early (emergency stop)",
+            json!({
+                "event": "session.ended",
+                "elapsedSeconds": elapsed,
+                "remainingSeconds": remaining,
+                "label": Value::Null,
+            }),
+        );
+    }
+    state
+        .panel
+        .log("Emergency stop: cleared both channels, stopped playlists/ramps/timer");
+    StatusCode::OK.into_response()
+}
+
+// ---- recipes ------------------------------------------------------
+
+async fn get_recipes(State(state): State<AppState>) -> Json<Value> {
+    Json(json!(state.panel.recipe_names()))
+}
+
+async fn get_recipe(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    match state.panel.recipe_get(&name) {
+        Some(recipe) => Json(recipe).into_response(),
+        None => error_response(StatusCode::NOT_FOUND, "no such recipe"),
+    }
+}
+
+async fn post_recipe(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(mut recipe): Json<Recipe>,
+) -> Response {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return error_response(StatusCode::BAD_REQUEST, "recipe name must not be empty");
+    }
+    if let Err(message) = recipe.validate_self() {
+        return error_response(StatusCode::BAD_REQUEST, &message);
+    }
+    recipe.name = name.clone();
+    state.panel.recipe_save(recipe);
+    state.panel.log(format!("Saved recipe \"{name}\""));
+    Json(json!({"name": name})).into_response()
+}
+
+async fn delete_recipe(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    if state.panel.recipe_delete(&name) {
+        state.panel.log(format!("Deleted recipe \"{name}\""));
+        StatusCode::OK.into_response()
+    } else {
+        error_response(StatusCode::NOT_FOUND, "no such recipe")
+    }
+}
+
+/// Resolves and starts every piece a recipe defines, in one call:
+/// loads and plays each named playlist, starts each ramp, starts the
+/// timer. Everything -- the recipe's own numbers, and that every
+/// referenced template actually exists -- is validated up front,
+/// before any state changes, so a bad recipe fails cleanly rather than
+/// partially applying (e.g. channel A's playlist already swapped out
+/// by the time a missing channel B template is discovered).
+async fn post_recipe_start(State(state): State<AppState>, Path(name): Path<String>) -> Response {
+    let Some(recipe) = state.panel.recipe_get(&name) else {
+        return error_response(StatusCode::NOT_FOUND, "no such recipe");
+    };
+    if let Err(message) = recipe.validate_self() {
+        return error_response(StatusCode::BAD_REQUEST, &message);
+    }
+
+    type ResolvedPlaylist = (
+        Vec<(playlist::EntryKind, playlist::DurationSpec)>,
+        bool,
+        bool,
+    );
+
+    let resolve_playlist = |label: &str,
+                            reference: &Option<RecipePlaylist>|
+     -> Result<Option<ResolvedPlaylist>, String> {
+        let Some(reference) = reference else {
+            return Ok(None);
+        };
+        let Some(template) = state.panel.template_get(&reference.template) else {
+            return Err(format!(
+                "recipe {label}: no such template \"{}\"",
+                reference.template
+            ));
+        };
+        let items = template
+            .to_queue_items()
+            .map_err(|message| format!("recipe {label}: {message}"))?;
+        Ok(Some((
+            items,
+            reference.shuffle,
+            template.settings.loop_playback,
+        )))
+    };
+
+    let resolved_a = match resolve_playlist("playlistA", &recipe.playlist_a) {
+        Ok(r) => r,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
+    let resolved_b = match resolve_playlist("playlistB", &recipe.playlist_b) {
+        Ok(r) => r,
+        Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+    };
+
+    if let Some((items, shuffle, loop_playback)) = resolved_a {
+        state
+            .panel
+            .playlist_load(Channel::A, items, shuffle, loop_playback);
+        if let Ok((step, token)) = state.panel.playlist_play(Channel::A) {
+            tokio::spawn(playlist_runner::run(
+                state.panel.clone(),
+                Channel::A,
+                token,
+                step,
+            ));
+        }
+    }
+    if let Some((items, shuffle, loop_playback)) = resolved_b {
+        state
+            .panel
+            .playlist_load(Channel::B, items, shuffle, loop_playback);
+        if let Ok((step, token)) = state.panel.playlist_play(Channel::B) {
+            tokio::spawn(playlist_runner::run(
+                state.panel.clone(),
+                Channel::B,
+                token,
+                step,
+            ));
+        }
+    }
+    if let Some(profile) = recipe.ramp_a {
+        let token = state.panel.ramp_start(Channel::A, profile);
+        tokio::spawn(ramp_runner::run(
+            state.panel.clone(),
+            Channel::A,
+            profile,
+            token,
+        ));
+    }
+    if let Some(profile) = recipe.ramp_b {
+        let token = state.panel.ramp_start(Channel::B, profile);
+        tokio::spawn(ramp_runner::run(
+            state.panel.clone(),
+            Channel::B,
+            profile,
+            token,
+        ));
+    }
+    if let Some(config) = recipe.timer {
+        let (schedule, total, token) = state.panel.session_start(config);
+        tokio::spawn(session_runner::run(
+            state.panel.clone(),
+            schedule,
+            0,
+            total,
+            token,
+        ));
+        state.panel.log_with(
+            "Session timer started",
+            json!({
+                "event": "session.started",
+                "elapsedSeconds": 0,
+                "remainingSeconds": total,
+                "label": Value::Null,
+            }),
+        );
+    }
+
+    state.panel.log(format!("Recipe \"{name}\" started"));
     StatusCode::OK.into_response()
 }
 

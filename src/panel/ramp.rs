@@ -14,13 +14,23 @@
 
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+use serde::{Deserialize, Serialize};
+
+/// Directly (de)serializable -- matches `POST /api/ramp`'s body shape
+/// exactly (`{"profile": "linear", "from": ..., ...}`, internally
+/// tagged on `profile`), so `handler::post_ramp` and `recipe.rs` (a
+/// recipe's `rampA`/`rampB` fields) can both use this type as-is
+/// instead of each defining their own parallel wire shape for the same
+/// three variants.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "profile", rename_all = "kebab-case")]
 pub enum RampProfile {
     /// Linearly interpolates from `from` to `to` over `over_seconds`,
     /// clamping at `to` once elapsed time reaches (or exceeds) it.
     Linear {
         from: i64,
         to: i64,
+        #[serde(rename = "overSeconds")]
         over_seconds: u32,
     },
     /// Wanders within `base` +/- `variance`, re-rolling a fresh step
@@ -28,14 +38,20 @@ pub enum RampProfile {
     RandomWalk {
         base: i64,
         variance: i64,
+        #[serde(rename = "stepSeconds")]
         step_seconds: u32,
+        #[serde(rename = "durationSeconds")]
         duration_seconds: u32,
     },
     /// Holds a single value for `duration_seconds` -- functionally a
     /// one-shot Set that stays "active" (shows in `/events`, blocks a
     /// manual override the same way the other profiles do) for a fixed
     /// window instead of ending immediately.
-    Hold { value: i64, duration_seconds: u32 },
+    Hold {
+        value: i64,
+        #[serde(rename = "durationSeconds")]
+        duration_seconds: u32,
+    },
 }
 
 impl RampProfile {

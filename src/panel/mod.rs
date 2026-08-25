@@ -26,6 +26,7 @@ pub mod presets;
 pub mod qrcode;
 pub mod ramp;
 pub mod ramp_runner;
+pub mod recipe;
 pub mod relay_client;
 pub mod session;
 pub mod session_runner;

@@ -506,3 +506,10 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 
 /* -- button mapping: minimal, textarea-based (see index.html) -- */
 .buttonmap-json { min-height: 200px; margin-top: 12px; }
+.btn.danger { border-color: oklch(45% 0.1 25); color: var(--err); }
+.btn.danger:hover { background: oklch(28% 0.07 25); border-color: var(--err); }
+.recipe-json { min-height: 110px; margin-top: 8px; }
+.recipe-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.recipe-empty { color: var(--faint); font-size: 13px; padding: 4px 0; }
+.recipe-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
+.recipe-name { flex: 1; font-weight: 600; }

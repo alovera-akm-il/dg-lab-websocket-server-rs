@@ -554,6 +554,77 @@
   $('button-map-reload').addEventListener('click', loadButtonMap);
   loadButtonMap();
 
+  // -- recipes: named session presets, not part of the SSE snapshot
+  // (config, not live device state) -- fetched once on load and again
+  // after Save/Start/Delete, same treatment as button mapping above ---
+
+  const recipeListEl = $('recipe-list');
+  const recipeEmptyEl = $('recipe-empty');
+  const recipeJsonTextarea = $('recipe-json');
+  const recipeSaveNameInput = $('recipe-save-name');
+
+  function loadRecipes() {
+    fetch('/api/session/recipes').then((r) => r.json()).then((names) => {
+      recipeListEl.querySelectorAll('.recipe-row').forEach((el) => el.remove());
+      recipeEmptyEl.hidden = names.length > 0;
+      names.forEach((name) => {
+        const row = document.createElement('div');
+        row.className = 'recipe-row';
+        row.innerHTML =
+          `<span class="recipe-name">${name}</span>` +
+          '<button class="btn small primary" data-recipe-start>Start</button>' +
+          '<button class="btn small" data-recipe-delete>Delete</button>';
+        row.querySelector('[data-recipe-start]').addEventListener('click', () => {
+          fetch(`/api/session/recipes/${encodeURIComponent(name)}/start`, { method: 'POST' })
+            .then(async (res) => {
+              if (!res.ok) {
+                let message = res.statusText;
+                try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
+                throw new Error(message);
+              }
+            }).catch((e) => showToast(e.message || 'failed to start recipe'));
+        });
+        row.querySelector('[data-recipe-delete]').addEventListener('click', () => {
+          fetch(`/api/session/recipes/${encodeURIComponent(name)}`, { method: 'DELETE' })
+            .then((res) => { if (res.ok) loadRecipes(); else showToast('failed to delete recipe'); });
+        });
+        recipeListEl.appendChild(row);
+      });
+    }).catch(() => showToast('failed to load recipes'));
+  }
+
+  $('recipe-save-btn').addEventListener('click', () => {
+    const name = recipeSaveNameInput.value.trim();
+    if (!name) { showToast('recipe name is required'); return; }
+    let recipe;
+    try {
+      recipe = JSON.parse(recipeJsonTextarea.value || '{}');
+    } catch (e) {
+      showToast('invalid JSON -- fix it before saving');
+      return;
+    }
+    fetch(`/api/session/recipes/${encodeURIComponent(name)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(recipe),
+    }).then(async (res) => {
+      if (!res.ok) {
+        let message = res.statusText;
+        try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
+        throw new Error(message);
+      }
+      recipeSaveNameInput.value = '';
+      recipeJsonTextarea.value = '';
+      loadRecipes();
+    }).catch((e) => showToast(e.message || 'failed to save recipe'));
+  });
+
+  $('recipe-stop-all').addEventListener('click', () => {
+    fetch('/api/session/stop', { method: 'POST' }).catch(() => showToast('failed to send emergency stop'));
+  });
+
+  loadRecipes();
+
   function render(state) {
     const v4Paired = state.v4Status === 'paired';
     const v3Paired = state.status === 'paired';

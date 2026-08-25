@@ -108,7 +108,29 @@
   </section>
   </div>
 
-  <div class="card-row" style="--cols: 1fr;">
+  <div class="card-row" style="--cols: 5fr 7fr;">
+  <section class="card card-in" style="animation-delay: 100ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+      <div class="card-title">Recipes</div>
+    </div>
+    <div class="recipe-list" id="recipe-list">
+      <div class="recipe-empty" id="recipe-empty">No recipes saved yet.</div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <input type="text" id="recipe-save-name" placeholder="Recipe name" style="flex:1; min-width:120px;">
+      <button class="btn small" id="recipe-save-btn">Save JSON below</button>
+    </div>
+    <textarea class="recipe-json mono" id="recipe-json" placeholder='{&#10;  "timer": {"durationSeconds": 1800},&#10;  "playlistA": {"template": "warmup-steady", "shuffle": false},&#10;  "rampA": {"profile": "linear", "from": 10, "to": 30, "overSeconds": 600}&#10;}'></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn small danger" id="recipe-stop-all">Emergency stop everything</button>
+    </div>
+    <div class="note">
+      A recipe composes a session timer, per-channel playlists (by saved template name), and per-channel ramps into
+      one Start button. There's no in-panel recipe builder &mdash; author the JSON above (same shape a saved recipe
+      returns from its own GET) and save it, or manage recipes from the Python client.
+    </div>
+  </section>
   <section class="card card-in" style="animation-delay: 120ms;">
     <div class="card-header">
       <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M9 2h6"/></svg></div>
