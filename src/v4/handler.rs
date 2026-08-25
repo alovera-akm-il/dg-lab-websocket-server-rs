@@ -287,7 +287,7 @@ fn on_message(state: &AppState, client_id: &str, text: &str) {
                 json!({"type":"message","clientId":client_id,"data":data}),
             );
             log_v4(
-                LogLevel::Info,
+                LogLevel::Debug,
                 format!("WS reported device={client_id} controller={controller_id}"),
             );
         }
