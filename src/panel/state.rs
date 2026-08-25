@@ -32,6 +32,8 @@ use uuid::Uuid;
 
 use crate::v3::protocol::Channel;
 
+use super::button_map::{self, ButtonAction, ButtonMap};
+use super::event_log::{EventLogConfig, EventLogMsg};
 use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
 use super::ramp::{RampProfile, RampSnapshot};
 use super::session::{self, SessionConfig, SessionSnapshot, SessionTimer};
@@ -189,6 +191,10 @@ struct Inner {
     /// method below writes the whole map back to disk right after
     /// updating it in memory.
     templates: HashMap<String, Template>,
+
+    /// Configurable button mapping -- like templates, survives a
+    /// process restart (see [`super::button_map`]/[`super::persistence`]).
+    button_map: ButtonMap,
 }
 
 pub struct Snapshot {
@@ -245,6 +251,13 @@ pub struct PanelState {
     /// Same pattern, for the panel-wide session timer -- see
     /// `Inner::session`'s docs. Singular, not per-channel.
     session_token: Mutex<CancellationToken>,
+    /// Channel to the event-log writer task (`event_log::run`), if one
+    /// has been wired up -- `None` for a `PanelState` constructed
+    /// directly by a test that never calls
+    /// `install_event_log_sender`, in which case `log_with` simply
+    /// skips the file-log sink (there's no file-log behavior under test
+    /// at that level anyway). Set once, at startup, by `panel::build()`.
+    event_log_tx: Mutex<Option<mpsc::UnboundedSender<EventLogMsg>>>,
 }
 
 impl PanelState {
@@ -285,6 +298,7 @@ impl PanelState {
                 ramp_b: None,
                 session: SessionTimer::new(),
                 templates: templates::load_all(),
+                button_map: button_map::load(),
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
@@ -294,6 +308,7 @@ impl PanelState {
             ramp_token_a: Mutex::new(CancellationToken::new()),
             ramp_token_b: Mutex::new(CancellationToken::new()),
             session_token: Mutex::new(CancellationToken::new()),
+            event_log_tx: Mutex::new(None),
         }
     }
 
@@ -389,7 +404,8 @@ impl PanelState {
             inner.webhook_url.clone()
         };
         self.notify_changed();
-        webhook::notify(webhook_url.as_deref(), &line, extra);
+        webhook::notify(webhook_url.as_deref(), &line, extra.clone());
+        self.event_log_append(line, extra);
     }
 
     pub fn set_webhook_url(&self, url: Option<String>) {
@@ -1123,6 +1139,72 @@ impl PanelState {
             templates::save_all(&snapshot);
         }
         removed
+    }
+
+    // ---- event log ------------------------------------------------------
+
+    /// Wires up the event-log writer task's channel -- called once by
+    /// `panel::build()` right after spawning `event_log::run`. See the
+    /// `event_log_tx` field docs for why this is a separate step
+    /// instead of a `new()` constructor argument.
+    pub fn install_event_log_sender(&self, tx: mpsc::UnboundedSender<EventLogMsg>) {
+        *self.event_log_tx.lock().unwrap() = Some(tx);
+    }
+
+    fn event_log_send(&self, msg: EventLogMsg) {
+        if let Some(tx) = self.event_log_tx.lock().unwrap().as_ref() {
+            let _ = tx.send(msg);
+        }
+    }
+
+    pub fn event_log_configure(&self, config: EventLogConfig) {
+        self.event_log_send(EventLogMsg::Configure(config));
+    }
+
+    /// Forces a fresh log file, whether or not one is already open --
+    /// see `event_log`'s module docs on what "session" means here.
+    pub fn event_log_start_session(&self) {
+        self.event_log_send(EventLogMsg::StartSession);
+    }
+
+    fn event_log_append(&self, message: String, extra: Value) {
+        self.event_log_send(EventLogMsg::Append { message, extra });
+    }
+
+    // ---- button mapping ---------------------------------------------------
+
+    pub fn button_map_get(&self) -> ButtonMap {
+        self.inner.lock().unwrap().button_map.clone()
+    }
+
+    pub fn button_map_set(&self, map: ButtonMap) {
+        {
+            self.inner.lock().unwrap().button_map = map.clone();
+        }
+        button_map::save(&map);
+    }
+
+    pub fn button_map_action_for(&self, key: &str) -> Option<ButtonAction> {
+        self.inner
+            .lock()
+            .unwrap()
+            .button_map
+            .pattern
+            .get(key)
+            .cloned()
+    }
+
+    /// Whether `channel`'s playlist is currently playing -- used by
+    /// `button_map::dispatch`'s `playlist_toggle` action. A thin,
+    /// direct accessor rather than reading the whole `snapshot()` just
+    /// to check one field.
+    pub fn playlist_is_playing(&self, channel: Channel) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let queue = match channel {
+            Channel::A => &inner.playlist_a,
+            Channel::B => &inner.playlist_b,
+        };
+        queue.phase() == playlist::Phase::Playing
     }
 }
 

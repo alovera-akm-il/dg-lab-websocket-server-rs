@@ -21,7 +21,9 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
+use super::button_map::ButtonMap;
 use super::config::Config;
+use super::event_log::EventLogConfig;
 use super::ramp::{self, RampProfile};
 use super::session::{self, SessionConfig};
 use super::state::{ActiveTarget, PanelState, Snapshot};
@@ -61,6 +63,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/session/timer/pause", post(post_session_timer_pause))
         .route("/api/session/timer/play", post(post_session_timer_play))
         .route("/api/session/end", post(post_session_end))
+        .route("/api/session/log-config", post(post_session_log_config))
+        .route("/api/session/start", post(post_session_start))
+        .route("/api/button-map", get(get_button_map).post(post_button_map))
         .route("/api/webhook", post(post_webhook))
         .route("/api/reconnect", post(post_reconnect))
         .route("/api/playlist/{channel}/items", post(post_playlist_item))
@@ -776,6 +781,38 @@ async fn post_session_end(State(state): State<AppState>) -> Response {
             state.panel.playlist_stop(Channel::B);
         }
     }
+    StatusCode::OK.into_response()
+}
+
+// ---- event log ------------------------------------------------------
+
+async fn post_session_log_config(
+    State(state): State<AppState>,
+    Json(config): Json<EventLogConfig>,
+) -> Response {
+    if let Err(message) = config.validate() {
+        return error_response(StatusCode::BAD_REQUEST, message);
+    }
+    state.panel.event_log_configure(config);
+    state.panel.log("Event log configuration updated");
+    StatusCode::OK.into_response()
+}
+
+async fn post_session_start(State(state): State<AppState>) -> Response {
+    state.panel.event_log_start_session();
+    state.panel.log("Event log: new session file started");
+    StatusCode::OK.into_response()
+}
+
+// ---- button mapping ---------------------------------------------------
+
+async fn get_button_map(State(state): State<AppState>) -> Json<ButtonMap> {
+    Json(state.panel.button_map_get())
+}
+
+async fn post_button_map(State(state): State<AppState>, Json(map): Json<ButtonMap>) -> Response {
+    state.panel.button_map_set(map);
+    state.panel.log("Button map updated");
     StatusCode::OK.into_response()
 }
 

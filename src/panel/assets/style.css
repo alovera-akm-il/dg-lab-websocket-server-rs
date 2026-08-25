@@ -503,3 +503,6 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 .gate-label { font-size: 11px; color: var(--faint); font-weight: 600; line-height: 1.3; }
 .gate.next .gate-label { color: var(--text); }
 .gate-eta { font-size: 10px; color: var(--faint); }
+
+/* -- button mapping: minimal, textarea-based (see index.html) -- */
+.buttonmap-json { min-height: 200px; margin-top: 12px; }

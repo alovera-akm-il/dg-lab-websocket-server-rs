@@ -13,8 +13,10 @@
 //! (the page, the `/events` SSE feed, and the command endpoints).
 
 mod assets;
+pub mod button_map;
 pub mod commands;
 pub mod config;
+pub mod event_log;
 pub mod handler;
 pub mod network;
 mod persistence;
@@ -55,6 +57,10 @@ pub fn build(
     }
     tokio::spawn(relay_client::run(v3_port, panel.clone()));
     tokio::spawn(v4_client::run(v4_port, v4_prefix.clone(), panel.clone()));
+
+    let (event_log_tx, event_log_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(event_log::run(event_log_rx));
+    panel.install_event_log_sender(event_log_tx);
 
     let lan_ip = network::detect_lan_ip().map(|ip| ip.to_string());
     match &lan_ip {

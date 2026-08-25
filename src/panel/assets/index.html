@@ -504,6 +504,26 @@
   </section>
   </div>
 
+  <div class="card-row" style="--cols: 1fr;">
+  <section class="card card-in" style="animation-delay: 220ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none"/></svg></div>
+      <div class="card-title">Button mapping</div>
+    </div>
+    <div class="note" style="margin-top:0;">
+      Assigns a server-side action to a physical button-shape press (e.g. <code>"A-circle"</code>) &mdash; a raw
+      JSON editor, same pattern as the custom waveform field above, rather than a per-button form. See
+      <code>docs/api.md</code>'s "Button mapping" section for the full action list.
+    </div>
+    <textarea class="buttonmap-json mono" id="button-map-json" placeholder="Loading&hellip;"></textarea>
+    <div class="row" style="margin-top:10px;">
+      <button class="btn primary small" id="button-map-save">Save mapping</button>
+      <button class="btn small" id="button-map-reload">Reload</button>
+      <span class="mono" id="button-map-status" style="color: var(--faint); font-size: 11.5px;"></span>
+    </div>
+  </section>
+  </div>
+
   <div class="card-row" style="--cols: 5fr 7fr;">
   <section class="card card-in" style="animation-delay: 240ms;">
     <div class="card-header">

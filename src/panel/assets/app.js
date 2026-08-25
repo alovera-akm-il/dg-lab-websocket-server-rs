@@ -514,6 +514,46 @@
     });
   }
 
+  // -- button mapping: raw JSON editor, not part of the SSE snapshot
+  // (config, not live device state) -- fetched once on load and again
+  // after Save/Reload ------------------------------------------------
+
+  const buttonMapTextarea = $('button-map-json');
+  const buttonMapStatusEl = $('button-map-status');
+
+  function loadButtonMap() {
+    fetch('/api/button-map').then((r) => r.json()).then((map) => {
+      buttonMapTextarea.value = JSON.stringify(map, null, 2);
+      buttonMapStatusEl.textContent = '';
+    }).catch(() => showToast('failed to load button map'));
+  }
+
+  $('button-map-save').addEventListener('click', () => {
+    let map;
+    try {
+      map = JSON.parse(buttonMapTextarea.value);
+    } catch (e) {
+      showToast('invalid JSON -- fix it before saving');
+      return;
+    }
+    fetch('/api/button-map', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(map),
+    }).then(async (res) => {
+      if (!res.ok) {
+        let message = res.statusText;
+        try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
+        throw new Error(message);
+      }
+      buttonMapStatusEl.textContent = 'Saved';
+      setTimeout(() => { buttonMapStatusEl.textContent = ''; }, 2000);
+    }).catch((e) => showToast(e.message || 'failed to save button map'));
+  });
+
+  $('button-map-reload').addEventListener('click', loadButtonMap);
+  loadButtonMap();
+
   function render(state) {
     const v4Paired = state.v4Status === 'paired';
     const v3Paired = state.status === 'paired';

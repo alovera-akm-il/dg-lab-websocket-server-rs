@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::logging::{LogLevel, log_panel};
 
+use super::button_map;
 use super::state::{PanelState, Protocol};
 
 pub async fn run(v3_port: u16, state: Arc<PanelState>) {
@@ -146,6 +147,9 @@ fn handle_frame(state: &Arc<PanelState>, text: &str, tx: &mpsc::UnboundedSender<
                         json!({"event": "button_feedback", "protocol": "v3", "code": action, "channel": channel, "shape": shape}),
                     );
                 state.set_button_action(Protocol::V3, action);
+                if let (Some(ch), Some(sh)) = (channel, shape) {
+                    button_map::dispatch(state, ch, sh);
+                }
             }
             None => state.log(format!("Feedback: {message}")),
         },

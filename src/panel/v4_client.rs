@@ -16,6 +16,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::logging::{LogLevel, log_panel};
 
+use super::button_map;
 use super::relay_client::decode_button_feedback;
 use super::state::{DeviceHealth, PanelState, Protocol};
 
@@ -215,6 +216,9 @@ fn handle_app_event(state: &Arc<PanelState>, data: &Value) {
                     json!({"event": "button_feedback", "protocol": "v4", "code": action, "channel": channel, "shape": shape}),
                 );
                 state.set_button_action(Protocol::V4, action);
+                if let (Some(ch), Some(sh)) = (channel, shape) {
+                    button_map::dispatch(state, ch, sh);
+                }
             }
         }
         _ => {}
