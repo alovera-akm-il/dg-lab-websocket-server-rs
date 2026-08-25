@@ -464,7 +464,9 @@ every time anything changes. Each event's `data` is:
   "qrSvgV4": "<svg>...</svg>" | null,
   "pairUrlV4": "https://dungeon-lab.cn/s/?v=1&action=socket&url=..." | null,
   "playlistA": <PlaylistSnapshot, see below>,
-  "playlistB": <PlaylistSnapshot, see below>
+  "playlistB": <PlaylistSnapshot, see below>,
+  "rampA": <ramp object, see "Ramps" below> | null,
+  "rampB": <ramp object, see "Ramps" below> | null
 }
 ```
 
