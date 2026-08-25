@@ -510,7 +510,20 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 .gate-eta { font-size: 10px; color: var(--faint); }
 
 /* -- button mapping: minimal, textarea-based (see index.html) -- */
-.buttonmap-json { min-height: 200px; margin-top: 12px; }
+.buttonmap-table-wrap { overflow-x: auto; margin-top: 12px; }
+.buttonmap-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.buttonmap-table th {
+  text-align: left; font-size: 11px; font-weight: 700; color: var(--faint); text-transform: uppercase;
+  letter-spacing: 0.05em; padding: 0 8px 8px; border-bottom: 1px solid var(--border);
+}
+.buttonmap-table td { padding: 5px 8px; vertical-align: middle; }
+.buttonmap-table tbody tr:not(:last-child) td { border-bottom: 1px solid var(--panel-2); }
+.buttonmap-table .bm-button-label { font-weight: 700; white-space: nowrap; }
+.buttonmap-table .bm-channel-tag { display: inline-block; width: 20px; }
+.buttonmap-table select, .buttonmap-table input[type=number] { font-size: 12.5px; padding: 6px 8px; }
+.buttonmap-table select.bm-action { min-width: 150px; }
+.buttonmap-table select.bm-target { min-width: 64px; }
+.buttonmap-table input.bm-amount { width: 70px; }
 .btn.danger { border-color: oklch(45% 0.1 25); color: var(--err); }
 .btn.danger:hover { background: oklch(28% 0.07 25); border-color: var(--err); }
 .recipe-json { min-height: 110px; margin-top: 8px; }

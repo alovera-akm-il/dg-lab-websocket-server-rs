@@ -555,12 +555,19 @@
       <div class="card-title">Button mapping</div>
     </div>
     <div class="note" style="margin-top:0;">
-      Assigns a server-side action to a physical button-shape press (e.g. <code>"A-circle"</code>) &mdash; a raw
-      JSON editor, same pattern as the custom waveform field above, rather than a per-button form. See
-      <code>docs/api.md</code>'s "Button mapping" section for the full action list.
+      Assigns a server-side action to each of the 10 physical button-shape presses (5 shapes &times; 2 channels).
+      &ldquo;None&rdquo; buttons still fire the button-feedback log/webhook event, just nothing additional happens.
+      See <code>docs/api.md</code>'s "Button mapping" section for exactly what each action does.
     </div>
-    <textarea class="buttonmap-json mono" id="button-map-json" placeholder="Loading&hellip;"></textarea>
-    <div class="row" style="margin-top:10px;">
+    <div class="buttonmap-table-wrap">
+      <table class="buttonmap-table">
+        <thead>
+          <tr><th>Button</th><th>Action</th><th>Target</th><th>Amount</th></tr>
+        </thead>
+        <tbody id="button-map-rows"></tbody>
+      </table>
+    </div>
+    <div class="row" style="margin-top:12px;">
       <button class="btn primary small" id="button-map-save">Save mapping</button>
       <button class="btn small" id="button-map-reload">Reload</button>
       <span class="mono" id="button-map-status" style="color: var(--faint); font-size: 11.5px;"></span>

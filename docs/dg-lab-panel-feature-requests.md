@@ -469,6 +469,16 @@ in place and passing; live end-to-end verification (an actual button
 press dispatching an action against a running panel) has not been run
 yet.
 
+**UI revised after initial ship:** the original raw-JSON-textarea UI
+(see "UI" below, written when this was first scoped) was later replaced
+with the full 10-row visual mapper that paragraph flagged as the bigger
+alternative — one row per button-shape combination, an action dropdown
+per row, and a target/amount field that only appears for actions that
+take one. Still no shortPress/doublePress/longPress UI, for the same
+wire-protocol reason above. Saving omits rows left at "None" rather than
+writing all 10 keys, so the stored `button-map.json` stays exactly as
+sparse as a hand-written one.
+
 Server-side actions assigned to physical button presses on the DG-LAB device.
 
 ### Current State

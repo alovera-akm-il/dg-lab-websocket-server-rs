@@ -531,32 +531,102 @@
       `<span class="checkin-time mono">${time}</span>`;
   }
 
-  // -- button mapping: raw JSON editor, not part of the SSE snapshot
-  // (config, not live device state) -- fetched once on load and again
-  // after Save/Reload ------------------------------------------------
+  // -- button mapping: a 10-row table (5 shapes x 2 channels), not part
+  // of the SSE snapshot (config, not live device state) -- fetched once
+  // on load and again after Save/Reload. Each action shows only the
+  // fields it actually takes; saving omits "none" rows entirely, same
+  // as an unmapped key (the server treats both identically). ----------
 
-  const buttonMapTextarea = $('button-map-json');
+  const BM_SHAPES = ['circle', 'triangle', 'square', 'star', 'hexagon'];
+  const BM_KEYS = ['A', 'B'].flatMap((ch) => BM_SHAPES.map((shape) => `${ch}-${shape}`));
+  const BM_ACTIONS = {
+    none: { label: 'None' },
+    webhook_only: { label: 'Webhook only' },
+    playlist_play: { label: 'Play playlist', channelKey: 'target' },
+    playlist_pause: { label: 'Pause playlist', channelKey: 'target' },
+    playlist_stop: { label: 'Stop playlist', channelKey: 'target' },
+    playlist_toggle: { label: 'Toggle playlist', channelKey: 'target' },
+    strength_inc: { label: 'Strength +amount', channelKey: 'channel', amountKey: 'amount', amountPlaceholder: 'amount', amountDefault: 1 },
+    strength_dec: { label: 'Strength -amount', channelKey: 'channel', amountKey: 'amount', amountPlaceholder: 'amount', amountDefault: 1 },
+    strength_set: { label: 'Strength = value', channelKey: 'channel', amountKey: 'value', amountPlaceholder: 'value', amountDefault: 0 },
+    strength_delta: { label: 'Strength delta', channelKey: 'channel', amountKey: 'delta', amountPlaceholder: '+/-delta', amountDefault: 0 },
+    ramp_cancel: { label: 'Cancel ramp', channelKey: 'channel' },
+    emergency_clear: { label: 'Emergency clear' },
+  };
+
+  const buttonMapRowsEl = $('button-map-rows');
   const buttonMapStatusEl = $('button-map-status');
+  const bmRows = {};
+
+  BM_KEYS.forEach((key) => {
+    const [channel, shape] = key.split('-');
+    const tr = document.createElement('tr');
+    const actionOptions = Object.entries(BM_ACTIONS)
+      .map(([value, meta]) => `<option value="${value}">${meta.label}</option>`)
+      .join('');
+    tr.innerHTML =
+      `<td class="bm-button-label">${channel} &middot; ${shape[0].toUpperCase()}${shape.slice(1)}</td>` +
+      `<td><select class="bm-action">${actionOptions}</select></td>` +
+      '<td><select class="bm-target"><option value="A">A</option><option value="B">B</option><option value="both">Both</option></select></td>' +
+      '<td><input type="number" class="bm-amount"></td>';
+    buttonMapRowsEl.appendChild(tr);
+
+    const actionEl = tr.querySelector('.bm-action');
+    const targetEl = tr.querySelector('.bm-target');
+    const amountEl = tr.querySelector('.bm-amount');
+    const targetCell = targetEl.closest('td');
+    const amountCell = amountEl.closest('td');
+
+    function syncVisibility() {
+      const meta = BM_ACTIONS[actionEl.value];
+      targetCell.hidden = !meta.channelKey;
+      amountCell.hidden = !meta.amountKey;
+      if (meta.amountKey) amountEl.placeholder = meta.amountPlaceholder;
+    }
+    actionEl.addEventListener('change', syncVisibility);
+    syncVisibility();
+
+    bmRows[key] = { actionEl, targetEl, amountEl };
+  });
 
   function loadButtonMap() {
     fetch('/api/button-map').then((r) => r.json()).then((map) => {
-      buttonMapTextarea.value = JSON.stringify(map, null, 2);
+      const pattern = map.pattern || {};
+      BM_KEYS.forEach((key) => {
+        const row = bmRows[key];
+        const action = pattern[key];
+        row.actionEl.value = action ? action.action : 'none';
+        if (action) {
+          const target = action.target ?? action.channel;
+          if (target) row.targetEl.value = target;
+          const amount = action.amount ?? action.value ?? action.delta;
+          if (amount != null) row.amountEl.value = amount;
+        }
+        row.actionEl.dispatchEvent(new Event('change'));
+      });
       buttonMapStatusEl.textContent = '';
     }).catch(() => showToast('failed to load button map'));
   }
 
   $('button-map-save').addEventListener('click', () => {
-    let map;
-    try {
-      map = JSON.parse(buttonMapTextarea.value);
-    } catch (e) {
-      showToast('invalid JSON -- fix it before saving');
-      return;
-    }
+    const pattern = {};
+    BM_KEYS.forEach((key) => {
+      const row = bmRows[key];
+      const action = row.actionEl.value;
+      if (action === 'none') return;
+      const meta = BM_ACTIONS[action];
+      const entry = { action };
+      if (meta.channelKey) entry[meta.channelKey] = row.targetEl.value;
+      if (meta.amountKey) {
+        const n = parseInt(row.amountEl.value, 10);
+        entry[meta.amountKey] = Number.isFinite(n) ? n : meta.amountDefault;
+      }
+      pattern[key] = entry;
+    });
     fetch('/api/button-map', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(map),
+      body: JSON.stringify({ pattern }),
     }).then(async (res) => {
       if (!res.ok) {
         let message = res.statusText;
