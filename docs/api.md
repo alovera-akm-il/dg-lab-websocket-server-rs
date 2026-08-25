@@ -417,6 +417,12 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/session/end` | End the session timer early |
 | `POST` | `/api/session/log-config` | Configure the file-based event log |
 | `POST` | `/api/session/start` | Force a fresh event-log session file |
+| `POST` | `/api/session/stop` | Emergency stop: clear both channels, stop playlists/ramps/timer |
+| `GET` | `/api/session/recipes` | List saved recipe names |
+| `GET` | `/api/session/recipes/{name}` | Get one recipe by name |
+| `POST` | `/api/session/recipes/{name}` | Save (create or replace) a recipe |
+| `DELETE` | `/api/session/recipes/{name}` | Remove a recipe |
+| `POST` | `/api/session/recipes/{name}/start` | Start every piece a recipe defines |
 | `GET` | `/api/button-map` | Read the current button mapping |
 | `POST` | `/api/button-map` | Replace the whole button mapping |
 | `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
@@ -1115,6 +1121,102 @@ flip it (`loopPlayback` has no equivalent per-load override — see
 `docs/dg-lab-panel-feature-requests.md`'s Templates section for why).
 `404` if `name` doesn't match a saved template; `400` if the template's
 stored data is invalid (see above).
+
+### Session presets / recipes
+
+Pure composition (`src/panel/recipe.rs`): a named bundle of a [session
+timer](#session-timer) config, per-channel [ramp](#ramps) profiles, and
+per-channel playlist references (by [template](#templates) name) that a
+single `POST .../start` resolves and starts together. A recipe carries no
+device-control logic of its own — starting one just calls the same
+`ramp_start`/`session_start`/`playlist_load`+`playlist_play` machinery
+`POST /api/ramp`, `POST /api/session/timer`, and `POST
+/api/playlist/{channel}/load-template` already use. Persisted like
+templates/the button map — survives a panel restart (`recipes.json` under
+`PANEL_DATA_DIR`).
+
+```json
+{
+  "name": "evening-warmup",
+  "timer": {"durationSeconds": 1800, "checkInEverySeconds": 900, "autoStopPlaylistsAtEnd": true},
+  "playlistA": {"template": "warmup-steady", "shuffle": false},
+  "rampA": {"profile": "linear", "from": 10, "to": 30, "overSeconds": 600},
+  "rampB": {"profile": "hold", "value": 15, "durationSeconds": 1800}
+}
+```
+
+`timer`/`playlistA`/`playlistB`/`rampA`/`rampB` are all optional — a recipe
+that only sets `rampA`, say, is legal, and starting it just starts that one
+ramp. `timer` is exactly a [`POST /api/session/timer`](#post-apisessiontimer)
+body; `rampA`/`rampB` are exactly a [`POST /api/ramp`](#post-apiramp) body's
+profile fields (no `channel`, since which channel is implied by the field
+name); `playlistA`/`playlistB` are `{"template": "...", "shuffle": bool}`,
+the same shape [`POST /api/playlist/{channel}/load-template`](#post-apiplaylistchannelload-template)
+takes.
+
+**Two deliberate deviations from the original request:**
+
+- **No `buttonMap` field.** The request's example recipe references a
+  button map *by name* (`"buttonMap": "default-warmup"`), but [button
+  mapping](#button-mapping) as built has exactly one active map, not a
+  named collection to pick between — there's nothing for a name reference
+  to resolve against. Out of scope here; would need "templates, but for
+  button maps" as its own feature first.
+- **Saving takes an explicit body, not a live-state snapshot.** The
+  request frames `POST /api/session/recipes/{name}` as "save current
+  session config as recipe," mirroring how `POST /api/templates/{name}`
+  captures a channel's *actual* live queue. But `playlistA`/`playlistB`
+  reference a template *by name*, and a live playlist queue has no such
+  name once loaded — there's nothing to snapshot back into a name
+  reference. The body is instead authored explicitly, the same way `POST
+  /api/button-map` and `POST /api/session/timer` already work.
+
+#### `GET /api/session/recipes`
+
+```json
+["evening-warmup", "quick-tease"]
+```
+
+Recipe names only, sorted alphabetically.
+
+#### `GET /api/session/recipes/{name}`
+
+Returns the recipe shape above. `404` if no recipe with that name exists.
+
+#### `POST /api/session/recipes/{name}`
+
+Body: the recipe shape above (`name` in the body is ignored — the path
+segment wins, same as templates). Upsert — overwrites any existing recipe
+with the same name. `400` if the name is empty, or if `timer`/`rampA`/
+`rampB`'s own numbers don't validate (the same rules `POST
+/api/session/timer`/`POST /api/ramp` already enforce) — **not** checked at
+save time: whether `playlistA`/`playlistB`'s named templates actually
+exist. `200` with `{"name": "..."}` on success.
+
+#### `DELETE /api/session/recipes/{name}`
+
+No body. `200` on success, `404` if no recipe with that name exists.
+
+#### `POST /api/session/recipes/{name}/start`
+
+No body. Starts every piece the recipe defines, in one call: loads and
+plays `playlistA`/`playlistB` (each stopping and replacing whatever that
+channel's queue currently holds, same as `load-template`), starts
+`rampA`/`rampB`, starts `timer`. Everything is validated up front —
+including that every referenced template actually exists — before any
+state changes, so a bad recipe fails cleanly with `400`/`404` rather than
+partially applying (e.g. channel A already swapped over by the time a
+missing channel B template is discovered). `404` if the recipe itself
+doesn't exist.
+
+#### `POST /api/session/stop`
+
+No body. The emergency "stop everything" companion to starting a recipe:
+stops both channels' playlists, cancels both channels' ramps, sends a
+clear frame to each channel (best-effort — silently skipped if no device
+is currently paired), and ends the session timer if one is running.
+Always `200 OK` — nothing here reports partial failure, since every step
+is unconditional.
 
 ---
 

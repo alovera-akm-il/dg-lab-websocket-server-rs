@@ -572,6 +572,26 @@ rather have the full visual mapper — it's a bigger but buildable option.
 
 ## 6. Session Presets / Recipes (Bonus)
 
+**Status: implemented.** `src/panel/recipe.rs` (data model + persistence,
+`recipes.json` under `PANEL_DATA_DIR`), wired into `src/panel/state.rs`
+(`recipe_names`/`recipe_get`/`recipe_save`/`recipe_delete`, mirroring
+Templates exactly) and `src/panel/handler.rs` (the six endpoints below plus
+`POST /api/session/stop`), with a minimal Recipes card in
+`src/panel/assets/index.html` (list + Start/Delete buttons, a raw-JSON
+save form, and the emergency-stop button) paired next to Session Timer, per
+the mockup. Matches the design here with two deliberate trims, both
+documented inline in `recipe.rs` and in `docs/api.md`'s "Session presets /
+recipes" section: there's no `buttonMap` field (Feature 5 has one active
+map, not a named collection to reference by name), and saving a recipe
+takes an explicit JSON body rather than snapshotting "current session
+state" (a live playlist queue has no template name to snapshot back into
+once loaded). `POST .../start` validates everything — the recipe's own
+numbers and that every referenced template exists — before starting
+anything, so a bad recipe fails cleanly rather than partially applying.
+Unit tests (round-trip serialization matching the request's own JSON
+shape, and `validate_self`) are in place and passing; integration-level/
+live-UI verification have not been run yet.
+
 Combine templates + ramps + timer into one named session definition.
 
 ### API
