@@ -418,6 +418,7 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/session/log-config` | Configure the file-based event log |
 | `POST` | `/api/session/start` | Force a fresh event-log session file |
 | `POST` | `/api/session/stop` | Emergency stop: clear both channels, stop playlists/ramps/timer |
+| `POST` | `/api/session/checkin` | Log a subjective check-in (color/arousal/discomfort/notes) |
 | `GET` | `/api/session/recipes` | List saved recipe names |
 | `GET` | `/api/session/recipes/{name}` | Get one recipe by name |
 | `POST` | `/api/session/recipes/{name}` | Save (create or replace) a recipe |
@@ -782,6 +783,76 @@ one) so the UI can draw the full checkpoint strip; `nextGateLabel`/
 `nextGateAt` (both `null` once every gate has passed) tell it which one to
 highlight as next. `state` is never `"stopped"` here — a stopped session is
 simply `sessionTimer: null`, same as an inactive ramp.
+
+### Subjective check-in
+
+`POST /api/session/checkin` — logs a subjective check-in (`src/panel/state.rs`'s
+`CheckIn`), for correlating how a session felt against what the device was
+actually doing at the time. Purely additive: it goes through the same
+`log_with` every other event does (webhook + file event log), plus keeps
+the most recent one for `/events`' `lastCheckIn`.
+
+```json
+{
+  "color": "green",
+  "arousal": 6,
+  "discomfort": "none",
+  "notes": "feeling good"
+}
+```
+
+`color` (required) must be exactly `"green"`, `"yellow"`, or `"red"`.
+`arousal` (required) must be an integer 1–10. `discomfort` defaults to
+`"none"` if omitted, and otherwise must be exactly `"none"`, `"mild"`,
+`"moderate"`, or `"severe"`. `notes` is free-form and fully optional.
+`400` if `color`/`arousal`/`discomfort` fails validation. The logged
+line's `extra.event` is `"subjective.check_in"`, following the existing
+dotted event-name taxonomy (`session.started`, `button_feedback`, …).
+
+#### `lastCheckIn` in `/events`
+
+`null` until the first check-in of the process's lifetime:
+
+```json
+{"timestamp": "2026-08-24T00:03:12.500Z", "color": "green", "arousal": 6, "discomfort": "none", "notes": "feeling good"}
+```
+
+Session-scoped like everything else the panel tracks live — not persisted
+to disk (only the file event log, if enabled, keeps a durable record).
+
+### Electrode contact quality alert
+
+Automatic, not an endpoint: the panel already receives `channelAStatus`/
+`channelBStatus` from V4 device reports (surfaced as `channelAStatus`/
+`channelAStatusLabel`/`channelBStatus`/`channelBStatusLabel` in `/events`,
+see [`GET /events`](#get-events-sse) above), and watches both channels
+for a transition to/from `"normal"` (status code `2`),
+firing a `contact_issue` event through the usual `log_with` pipeline
+(webhook + file event log) — same mechanism as every other panel event,
+no new endpoint or SSE field.
+
+```json
+{"message": "Electrode contact entered on channel A: open_circuit", "timestamp": "...", "event": "contact_issue", "channel": "A", "status": "entered", "issue": "open_circuit"}
+```
+
+`status` is `"entered"` (just became an issue) or `"resolved"` (issue
+cleared) — both directions fire. `issue` is one of `"loose"`,
+`"open_circuit"`, `"damaged"`, or `"unknown"` on `"entered"`, and always
+`"normal"` on `"resolved"`. Debounced to at most one alert per channel
+per 500ms — a status report that arrives within that window of the last
+alert still updates the live `channelAStatus`/`channelBStatus` fields as
+always, it just doesn't fire a second alert.
+
+**V4-only.** `channelAStatus`/`channelBStatus` are V4-specific fields —
+V3 reports no contact-quality signal on the wire at all, so this can
+never fire over a V3 connection.
+
+**Status-code-to-`issue` mapping is a judgment call**, not something the
+original request's four-value `issue` enum lines up with cleanly against
+the five documented status codes: code `0` ("no output") maps to
+`"loose"` as the closest fit (no signal path, e.g. a detached pad); code
+`4` ("masked", Coyote-only) falls back to `"unknown"`, alongside any
+undocumented code.
 
 ### File-based event log
 

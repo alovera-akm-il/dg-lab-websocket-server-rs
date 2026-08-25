@@ -11,6 +11,11 @@ architecture doesn't support as written. A mockup of every proposed UI
 addition, laid directly into the real panel page (dashed/badged cards
 mark what's new; solid ones are shipped as-is today), is at
 <https://claude.ai/code/artifact/ba9d3adc-941f-4fb2-9a94-f819270bfaea>.
+**Historical, not current:** all six features have since shipped, and a
+couple of details (notably Recipes — no live "save current session as…"
+capture, no button-map switching; see its "Status: implemented" note
+below) diverged from that mockup during implementation. Left as-is as a
+record of the original proposal, not updated to match the final build.
 
 **One thing all six share:** nothing in the panel today survives a process
 restart except `PANEL_WEBHOOK_URL`'s *initial* value (re-read from the
@@ -664,6 +669,215 @@ next to Session (these two are the "whole-session" controls, so they sit
 together rather than beside a single-channel card like Templates does).
 A list of saved recipe names, each with a **Start** button, plus **Save
 current session as…**.
+
+---
+
+## 7. Subjective Check-in Logging
+
+**Status: implemented**, per Mara's answers below. `POST /api/session/checkin`
+in `src/panel/handler.rs` validates the body exactly as specified (`color`
+required, `arousal` required 1–10, `discomfort` defaults to `"none"`,
+`notes` optional), logs it as `subjective.check_in` via the existing
+`log_with`, and stores it on `PanelState` (`CheckIn` in `src/panel/state.rs`)
+for `/events`' new `lastCheckIn` field. The Session timer card shows a
+"Last check-in" status line. See `docs/api.md`'s "Subjective check-in"
+section for the final reference. Unit tests (`record_check_in_populates_
+the_snapshot`) are in place and passing; integration-level/live-UI
+verification have not been run yet.
+
+**API:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/session/checkin` | Log a subjective check-in |
+
+**Request Body:**
+
+```json
+{
+  "color": "green" | "yellow" | "red",
+  "arousal": 1-10,
+  "discomfort": "none" | "mild" | "moderate" | "severe",
+  "notes": "Optional freeform notes"
+}
+```
+
+**Use Case:**
+
+During sessions, the sub reports color/arousal/discomfort at check-in gates. This data is currently lost to chat logs. Logging it into the event stream would let us correlate "arousal 6, color green" with "strengthA:50, waveform:Breathing" for post-session analysis.
+
+**Implementation Notes:**
+
+- The request body is a direct fit for the existing `log_with` two-argument pattern. Every current event type already goes through it, so this is additive, not a new mechanism.
+- The Python client would expose this as a single command during sessions, e.g., `dg_lab_panel_client.py checkin color=green arousal=6`.
+
+**Needs clarification before implementation:**
+
+- Are all four fields required on every check-in, or can e.g. `arousal` be logged alone without `color`/`discomfort`?
+- Is `arousal` strictly required to be an integer 1–10 — rejected with `400` outside that range, or clamped? Are `color`/`discomfort` validated against the listed values (`400` on anything else), or accepted as free-form strings?
+- What `event` name should the logged line's `extra.event` field use? Existing events use a dotted taxonomy (`session.started`, `session.check_in`, `button_feedback`) — this needs one for consistency.
+- Does a check-in need to show up live anywhere (the `/events` snapshot, a panel UI element), or is it log/webhook-only, as the request's own framing ("logged into the event stream," "post-session analysis") implies?
+
+---
+
+## 8. Electrode Contact Quality Alert
+
+**Status: implemented**, per Mara's answers below. Purely automatic and
+V4-only, as clarified — no endpoint. `state.rs`'s `v4_set_device`/
+`v4_update_device` now detect a `normal` <-> issue transition on
+`channelAStatus`/`channelBStatus` (`detect_contact_transition`) with a
+500ms per-channel debounce, firing both `"entered"` and `"resolved"`;
+`v4_client.rs` logs each as a `contact_issue` event via `log_with`. The
+five documented status codes don't map one-to-one onto the request's
+four `issue` values — `contact_issue_str`'s mapping (documented inline
+and in `docs/api.md`) is a judgment call, not something the clarification
+round settled explicitly. See `docs/api.md`'s "Electrode contact quality
+alert" section for the final reference. Unit tests (transition detection,
+debounce behavior, the status-code mapping, and one end-to-end
+`v4_update_device` case) are in place and passing; integration-level/
+live-device verification have not been run yet.
+
+**API:**
+
+| Event | Fields | Fires when |
+|-------|--------|-------------|
+| `contact_issue` | `channel: "A" | "B"`, `issue: "loose" | "damaged" | "open_circuit" | "unknown"` | When electrode contact quality changes from `normal` to anything else. |
+
+**Use Case:**
+
+Safety-critical. Tonight's pad displacement was reported late. The panel already receives `channelAStatus`/`channelBStatus` (open circuit, normal, damaged, etc.) from the device. An immediate alert when status changes from `normal` to anything else would trigger an immediate alert — no waiting for the sub to notice.
+
+**Implementation Notes:**
+
+- The event is a direct fit for the existing `log_with` two-argument pattern. Every current event type already goes through it, so this is additive, not a new mechanism.
+- The Python client would expose this as a single command during sessions, e.g., `dg_lab_panel_client.py alert contact_issue channel=A issue=loose`.
+
+**Needs clarification before implementation:**
+
+- The API table lists an *event*, not a `Method`/`Path` the way every other feature does — it's unclear how this actually gets triggered. The Use Case ("no waiting for the sub to notice") reads as the panel detecting the transition itself, automatically, from `channelAStatus`/`channelBStatus` data it already has; the Implementation Notes' example Python command (`alert contact_issue channel=A issue=loose`) reads as a human/client manually reporting it after noticing. These are two different features — which is wanted, or both?
+- If automatic: this can only ever fire over V4. `channelAStatus`/`channelBStatus` are V4-only fields in the current code (`src/panel/state.rs`) — V3 reports no contact-quality signal on the wire at all. Is a V4-only alert acceptable, or does V3 need a different detection path?
+- Should it also fire on recovery (issue → `normal`), not just `normal` → issue?
+- Device status can flap. Is any debounce/rate-limit wanted, or should every transition alert immediately, however brief?
+
+---
+
+## 9. Per-Channel Intensity Calibration
+
+**Status:** Proposed.
+
+**API:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/calibration` | Configure per-channel intensity calibration |
+
+**Request Body:**
+
+```json
+{
+  "channelA": {
+    "gain": 1.0,
+    "offset": 0
+  },
+  "channelB": {
+    "gain": 1.0,
+    "offset": 0
+  }
+}
+```
+
+**Use Case:**
+
+Based on tonight: perineum at 25 feels roughly equivalent to inner thigh at 50. A panel-level gain/offset per channel (e.g., "Channel B actual = requested × 2.0") would let me write recipes saying "ramp both to 40" and have them feel matched, rather than manually compensating every time.
+
+**Implementation Notes:**
+
+- The calibration is applied when the panel sends strength commands. It does not affect the device's own reported `strengthA`/`strengthB` or the panel's soft limits.
+- The Python client would expose this as a single command, e.g., `dg_lab_panel_client.py calibration channelA_gain=2.0 channelB_offset=5`.
+
+**Needs clarification before implementation:**
+
+- Order of operations: is the calibrated wire value `requested × gain + offset`, or `(requested + offset) × gain`? The example ("Channel B actual = requested × 2.0") only demonstrates gain alone.
+- Does the configured upper limit (`POST /api/limit`) check the requested (pre-calibration) value or the calibrated (actual wire) value? Safety-relevant either way: a gain above 1 could let real output exceed the configured limit if the check runs before calibration is applied.
+- On V4, `POST /api/strength`'s `op: "set"` is already emulated as a delta from the device's last known reported strength (see ["Strength control"](../docs/api.md)). If the API speaks in pre-calibration ("logical") units, computing that delta correctly means inverting the calibration to find the right raw wire delta — the request doesn't address this at all, and it's the trickiest part of this feature.
+- The device reports its *actual* (post-calibration, raw) strength back on every status update, and that's what the panel currently displays and returns in `/events`. Should the display/API also become calibration-aware (show a back-converted "logical" value), or is seeing "80" on screen after asking for "40" (gain 2.0) accepted as expected behavior?
+- Should calibration persist across a panel restart, like templates/button-map/recipes do — or reset each session, like the upper limit currently does?
+- Should `gain`/`offset` be range-validated (e.g. reject negative gain, or a combination that could produce a negative wire value)?
+
+---
+
+## 10. True Session Pause/Resume with State Preservation
+
+**Status:** Proposed.
+
+**API:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/session/pause` | Pause the session, preserving state |
+| `POST` | `/api/session/resume` | Resume the paused session |
+
+**Use Case:**
+
+Tonight's ramp cancellation forced a restart from scratch. A real pause needs to capture: ramp position (current value and remaining time), playlist entry position and remaining ms, timer elapsed time, and device strengths. Resume restores all of it. Currently pause just freezes the clock — it doesn't snapshot the world.
+
+**Implementation Notes:**
+
+- The pause state is stored in `PanelState` and survives a panel restart.
+- The Python client would expose this as two commands, e.g., `dg_lab_panel_client.py session pause` and `dg_lab_panel_client.py session resume`.
+
+**Needs clarification before implementation:**
+
+- Playlists and the session timer already have real, position-preserving pause/resume today (`POST /api/playlist/{channel}/pause` captures remaining ms; `POST /api/session/timer/pause`/`play` captures elapsed time and resumes the schedule). **Ramps are the one piece that doesn't** — `src/panel/ramp.rs`'s own design docs call this out as a deliberate prior decision ("there's no pause/resume, only start/stop… unlike playlists there's no captured 'remaining' state to restore on resume"). Is the actual ask here specifically to add that missing ramp-pause capability (and then have one endpoint call all three sub-systems' pause/resume together), or to change how playlist/session pause already behave too?
+- "Capture… device strengths" — does pausing mean *actively commanding the device's strength down* (and restoring it on resume), or just *recording* what the strength was at pause time for logging/display? These have very different safety implications and need to be explicit before this touches a live device.
+- "Survives a panel restart" is a materially bigger ask than the rest of this feature: it means a new persisted store (like templates/recipes), *and* the panel correctly re-establishing real device state after a crash/restart — not just an in-process pause that's lost if the server restarts. Is persisted, restart-surviving pause actually needed, or is an in-memory pause (lost on restart, like the rest of session state today) acceptable?
+- If a paused playlist's queue was loaded from a template that gets edited or deleted while paused, what should `resume` do?
+
+---
+
+## Clarifications — Mara’s Answers
+
+### Persistence Format (Open Question from Introduction)
+
+**JSON file on disk is correct.** One file per store under `PANEL_DATA_DIR` — same shape as `LOG_DIR`. SQLite is overkill for key-value template/recipe data; the atomic write-to-tmp-then-rename pattern already used in `persistence.rs` is sufficient. Confirming this approach.
+
+---
+
+### Feature 7 — Subjective Check-in Logging
+
+1. **Required fields:** `color` and `arousal` are mandatory — reject with `400` if either is missing. `discomfort` defaults to `"none"` if omitted. `notes` is fully optional.
+2. **Validation:** `arousal` must be an integer 1–10 — reject with `400` if outside range or non-integer. `color` must be exactly `"green"`, `"yellow"`, or `"red"` — `400` otherwise. `discomfort` must be exactly `"none"`, `"mild"`, `"moderate"`, or `"severe"` — `400` otherwise. Strict validation prevents garbage data in the event stream.
+3. **Event name:** Use `subjective.check_in` — follows the existing dotted taxonomy (`session.started`, `button_feedback`, etc.).
+4. **Live display:** Yes. Add `lastCheckIn` to the `/events` SSE snapshot showing the most recent check-in data (timestamp, color, arousal, discomfort, notes). Webhook fires with the same payload. Panel UI gets a small status line in the Session card: **Last check-in:** Green / 6 / none — timestamp. Log/webhook is primary; live display is secondary but useful.
+
+---
+
+### Feature 8 — Electrode Contact Quality Alert
+
+1. **Automatic detection.** The panel detects transitions from `channelAStatus`/`channelBStatus` data it already receives. The Python client example in the Implementation Notes was misleading — this is **not** a manual-reporting endpoint. The feature is purely automatic.
+2. **V4-only is acceptable.** V3 reports no contact-quality signal on the wire; this is a documented limitation, not a gap to fill. If V3 ever adds status reporting, we extend then. For now, alert only when a V4 device is connected and status is available.
+3. **Fire on both directions:** Alert on `normal → issue` and on `issue → normal`. Include a `status` field in the event payload: `"entered"` or `"resolved"`. Both directions matter for post-session analysis.
+4. **Debounce:** 500 ms minimum between alerts on the same channel. If the status flaps faster than that, log the transition internally but suppress duplicate webhook/SSE noise. One alert per 500 ms window per channel.
+
+---
+
+### Feature 9 — Per-Channel Intensity Calibration
+
+1. **Order of operations:** `(requested + offset) × gain`. Offset applies first, then gain. Example: if perineum needs a +5 baseline shift to match thigh sensation at equal recipe values, set `offset: 5`, `gain: 1.0`.
+2. **Upper limit check:** Runs on the **calibrated (actual wire)** value. Safety-critical — if a recipe requests 50 and calibration would send 100, the panel rejects with `400` before the device sees it. The limit is a hard ceiling on physical output, not on logical recipe values.
+3. **V4 `set` emulation:** This is the trickiest part. For V4 `op: "set"`, the panel must compute the logical-to-raw mapping, then derive the delta from the device’s last known **raw** strength. If no raw baseline is known (device just connected), reject with `409` — same as current behavior. Document this as a known V4 calibration limitation.
+4. **Display:** Show **both** values in `/events` and panel UI: `strengthA` (raw actual, as today) and `logicalStrengthA` (back-converted). The UI labels must make clear which is which — e.g., **A: 80 (logical: 40)**. I want to see both. The raw value matters for safety; the logical value matters for recipe debugging.
+5. **Persistence:** Yes, persists across restart. Calibration is a hardware-zone characteristic (thigh vs. perineum sensitivity), not session-scoped. Store it alongside templates/recipes in the persistence layer.
+6. **Validation:** `gain` must be ≥ 0.1 and ≤ 5.0. `offset` must be ≥ -50 and ≤ 50. Reject any combination that would produce a negative wire value or a value > 200 (the device’s maximum). `400` on any violation.
+
+---
+
+### Feature 10 — True Session Pause/Resume with State Preservation
+
+1. **Scope:** Add ramp-pause capability specifically. Then have `POST /api/session/pause` call all three subsystems’ pause in sequence: playlist pause (already works), timer pause (already works), ramp pause (new). Do **not** change existing playlist/timer behavior — they’re already correct.
+2. **Pausing strength behavior:** On pause, **actively command strength to 0 on both channels** and record the pre-pause strengths for restore on resume. Safety first — never leave a device running at pause. On resume, restore channels to their recorded pre-pause strengths, then resume ramps/playlists/timer.
+3. **Persistence:** In-memory only. Acceptable if lost on restart. If the panel restarts during pause, that’s effectively an emergency stop anyway — channels at 0, all state lost. I do **not** need restart-surviving pause state.
+4. **Deleted template while paused:** On resume, skip the playlist (leave it stopped) and restore ramps/timer only. Log a warning: *"Template 'warmup-steady' no longer exists; playlist skipped on resume."* Do not fail the entire resume over a missing playlist — the ramp and timer are the critical pieces.
 
 ---
 
