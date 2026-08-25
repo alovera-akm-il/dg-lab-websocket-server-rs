@@ -108,6 +108,56 @@
   </section>
   </div>
 
+  <div class="card-row" style="--cols: 1fr;">
+  <section class="card card-in" style="animation-delay: 120ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M9 2h6"/></svg></div>
+      <div class="card-title">Session timer</div>
+    </div>
+
+    <div id="session-config">
+      <div class="row">
+        <label class="field-label" for="session-duration">Duration (min)</label>
+        <input type="number" id="session-duration" value="60" min="1">
+        <label class="field-label" for="session-checkin">Check-in every (min)</label>
+        <input type="number" id="session-checkin" value="15" min="0">
+        <label class="checkbox-label"><input type="checkbox" id="session-auto-stop-playlists" checked> Stop playlists at end</label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <input type="number" id="session-gate-at" placeholder="At (min)" min="0">
+        <input type="text" id="session-gate-label" placeholder="Gate label, e.g. midpoint" style="flex:1; min-width:140px;">
+        <button class="btn small" id="session-gate-add">+ Add gate</button>
+      </div>
+      <div class="session-gate-list" id="session-gate-list">
+        <div class="session-gate-empty" id="session-gate-empty">No phase gates yet &mdash; optional.</div>
+      </div>
+      <button class="btn primary" id="session-start" style="margin-top:12px;">Start session</button>
+    </div>
+
+    <div id="session-active" hidden>
+      <div class="session-countdown">
+        <span class="elapsed mono" id="session-elapsed">00:00</span>
+        <span class="of">/ <span id="session-duration-display">00:00</span> elapsed</span>
+        <span class="remaining mono" id="session-remaining"></span>
+      </div>
+      <div class="gate-track" id="session-gate-track"></div>
+      <div class="row session-controls">
+        <button class="btn round primary" id="session-playpause" title="Pause">
+          <svg id="session-playpause-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+        </button>
+        <button class="btn small" id="session-end">End session</button>
+        <span style="flex:1"></span>
+        <span class="mono" id="session-summary"></span>
+      </div>
+    </div>
+
+    <div class="note">
+      Fires a webhook at every check-in and phase gate, and can auto-stop both channels' playlists when the timer
+      ends. Session config is session-scoped, like playlists &mdash; it doesn't survive a panel restart.
+    </div>
+  </section>
+  </div>
+
   <div class="card-row" style="--cols: 5fr 7fr;">
   <section class="card card-in" style="animation-delay: 140ms;">
     <div class="card-header">

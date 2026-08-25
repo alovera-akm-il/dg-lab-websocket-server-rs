@@ -473,3 +473,33 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 .playlist-summary { color: var(--faint); font-size: 12px; }
 .btn.round { width: 38px; height: 38px; padding: 0; flex: none; border-radius: 50%; }
 .btn.icon.toggle.active { background: var(--accent-bg); border-color: var(--accent-border); color: var(--accent); }
+
+/* -- session timer -------------------------------------------------- */
+.checkbox-label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+.checkbox-label input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); }
+
+.session-gate-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.session-gate-empty { color: var(--faint); font-size: 12px; padding: 4px 2px; }
+.session-gate-row {
+  display: flex; align-items: center; gap: 10px; padding: 6px 9px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+}
+.session-gate-row .at { color: var(--faint); flex: none; }
+.session-gate-row .label { flex: 1; font-size: 13px; font-weight: 600; }
+
+.session-countdown { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.session-countdown .elapsed { font-size: 30px; font-weight: 800; letter-spacing: -0.01em; }
+.session-countdown .of { color: var(--faint); font-size: 13px; }
+.session-countdown .remaining { margin-left: auto; font-size: 12px; color: var(--faint); }
+.session-controls { margin-top: 14px; }
+
+.gate-track { display: flex; align-items: flex-start; margin-top: 18px; margin-bottom: 4px; }
+.gate-line { flex: 1; height: 2px; background: var(--border); position: relative; top: 13px; }
+.gate-line.done { background: var(--accent-border); }
+.gate { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: none; width: 92px; text-align: center; }
+.gate-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--panel-3); border: 2px solid var(--border); }
+.gate.done .gate-dot { background: var(--accent-border); border-color: var(--accent-border); }
+.gate.next .gate-dot { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 4px oklch(78% 0.13 200 / 18%); }
+.gate-label { font-size: 11px; color: var(--faint); font-weight: 600; line-height: 1.3; }
+.gate.next .gate-label { color: var(--text); }
+.gate-eta { font-size: 10px; color: var(--faint); }

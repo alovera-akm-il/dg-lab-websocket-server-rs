@@ -23,11 +23,13 @@ use uuid::Uuid;
 
 use super::config::Config;
 use super::ramp::{self, RampProfile};
+use super::session::{self, SessionConfig};
 use super::state::{ActiveTarget, PanelState, Snapshot};
 use super::{
-    assets, commands, network, playlist, playlist_runner, presets, qrcode, ramp_runner, templates,
-    v4_client, v4_commands, webhook,
+    assets, commands, network, playlist, playlist_runner, presets, qrcode, ramp_runner,
+    session_runner, templates, v4_client, v4_commands, webhook,
 };
+use crate::v3::protocol::Channel;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -55,6 +57,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/limit", post(post_limit))
         .route("/api/ramp", post(post_ramp))
         .route("/api/ramp/stop", post(post_ramp_stop))
+        .route("/api/session/timer", post(post_session_timer))
+        .route("/api/session/timer/pause", post(post_session_timer_pause))
+        .route("/api/session/timer/play", post(post_session_timer_play))
+        .route("/api/session/end", post(post_session_end))
         .route("/api/webhook", post(post_webhook))
         .route("/api/reconnect", post(post_reconnect))
         .route("/api/playlist/{channel}/items", post(post_playlist_item))
@@ -217,6 +223,7 @@ fn snapshot_json(
         "playlistB": playlist_json(&snapshot.playlist_b),
         "rampA": ramp_json(snapshot.ramp_a),
         "rampB": ramp_json(snapshot.ramp_b),
+        "sessionTimer": session_timer_json(&snapshot.session_timer),
     })
 }
 
@@ -260,6 +267,30 @@ fn ramp_json(ramp: Option<ramp::RampSnapshot>) -> Value {
         base_fields.extend(extra_fields);
     }
     obj
+}
+
+/// `null` when no session timer is active. `phaseGates` carries every
+/// configured gate (not just the next one) so the UI can draw the full
+/// checkpoint strip, with `nextGateAt`/`nextGateLabel` telling it which
+/// one to highlight.
+fn session_timer_json(session: &Option<session::SessionSnapshot>) -> Value {
+    let Some(s) = session else {
+        return Value::Null;
+    };
+    json!({
+        "state": s.state.as_str(),
+        "elapsed": s.elapsed_secs,
+        "remaining": s.remaining_secs,
+        "durationSeconds": s.duration_seconds,
+        "checkInEverySeconds": s.check_in_every_seconds,
+        "nextGateLabel": s.next_gate_label,
+        "nextGateAt": s.next_gate_at,
+        "phaseGates": s.phase_gates.iter().map(|g| json!({
+            "atSeconds": g.at_seconds,
+            "label": g.label,
+        })).collect::<Vec<_>>(),
+        "autoStopPlaylistsAtEnd": s.auto_stop_playlists_at_end,
+    })
 }
 
 fn playlist_entry_json(entry: &playlist::PlaylistEntry) -> Value {
@@ -642,6 +673,109 @@ async fn post_ramp_stop(State(state): State<AppState>, Json(body): Json<RampStop
         "Ramp channel {}: stopped",
         commands::channel_str(channel)
     ));
+    StatusCode::OK.into_response()
+}
+
+// ---- session timer --------------------------------------------------
+
+#[derive(Deserialize)]
+struct PhaseGateBody {
+    #[serde(rename = "atSeconds")]
+    at_seconds: u32,
+    label: String,
+}
+
+#[derive(Deserialize)]
+struct SessionTimerBody {
+    #[serde(rename = "durationSeconds")]
+    duration_seconds: u32,
+    #[serde(rename = "checkInEverySeconds", default)]
+    check_in_every_seconds: u32,
+    #[serde(rename = "phaseGates", default)]
+    phase_gates: Vec<PhaseGateBody>,
+    #[serde(rename = "autoStopPlaylistsAtEnd", default)]
+    auto_stop_playlists_at_end: bool,
+}
+
+async fn post_session_timer(
+    State(state): State<AppState>,
+    Json(body): Json<SessionTimerBody>,
+) -> Response {
+    let config = SessionConfig {
+        duration_seconds: body.duration_seconds,
+        check_in_every_seconds: body.check_in_every_seconds,
+        phase_gates: body
+            .phase_gates
+            .into_iter()
+            .map(|g| session::PhaseGate {
+                at_seconds: g.at_seconds,
+                label: g.label,
+            })
+            .collect(),
+        auto_stop_playlists_at_end: body.auto_stop_playlists_at_end,
+    };
+    if let Err(message) = config.validate() {
+        return error_response(StatusCode::BAD_REQUEST, &message);
+    }
+
+    let (schedule, total, token) = state.panel.session_start(config);
+    tokio::spawn(session_runner::run(
+        state.panel.clone(),
+        schedule,
+        0,
+        total,
+        token,
+    ));
+    state.panel.log_with(
+        "Session timer started",
+        json!({
+            "event": "session.started",
+            "elapsedSeconds": 0,
+            "remainingSeconds": total,
+            "label": Value::Null,
+        }),
+    );
+    StatusCode::OK.into_response()
+}
+
+async fn post_session_timer_pause(State(state): State<AppState>) -> Response {
+    if state.panel.session_pause() {
+        state.panel.log("Session timer paused");
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn post_session_timer_play(State(state): State<AppState>) -> Response {
+    if let Some((schedule, elapsed, total, token)) = state.panel.session_resume() {
+        tokio::spawn(session_runner::run(
+            state.panel.clone(),
+            schedule,
+            elapsed,
+            total,
+            token,
+        ));
+        state.panel.log("Session timer resumed");
+    }
+    StatusCode::OK.into_response()
+}
+
+async fn post_session_end(State(state): State<AppState>) -> Response {
+    if let Some((config, elapsed)) = state.panel.session_stop() {
+        let remaining = config.duration_seconds.saturating_sub(elapsed);
+        state.panel.log_with(
+            "Session timer ended early",
+            json!({
+                "event": "session.ended",
+                "elapsedSeconds": elapsed,
+                "remainingSeconds": remaining,
+                "label": Value::Null,
+            }),
+        );
+        if config.auto_stop_playlists_at_end {
+            state.panel.playlist_stop(Channel::A);
+            state.panel.playlist_stop(Channel::B);
+        }
+    }
     StatusCode::OK.into_response()
 }
 

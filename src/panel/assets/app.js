@@ -384,6 +384,136 @@
   const rampA = makeRampController('a', 'A');
   const rampB = makeRampController('b', 'B');
 
+  // -- session timer -------------------------------------------------------
+  //
+  // Duration/check-in/gate times are entered in minutes (friendlier for a
+  // 15-60 minute session than raw seconds) and converted to seconds only
+  // when building the POST body -- the server only ever speaks seconds.
+  // Phase gates are built up client-side (pendingGates) before the
+  // session starts; once POSTed, the server is the source of truth and
+  // the gate list is rendered from the SSE snapshot instead.
+
+  function formatMmSs(totalSeconds) {
+    const m = Math.floor(totalSeconds / 60);
+    const s = totalSeconds % 60;
+    return `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  const sessionConfigEl = $('session-config');
+  const sessionActiveEl = $('session-active');
+  const sessionElapsedEl = $('session-elapsed');
+  const sessionDurationDisplayEl = $('session-duration-display');
+  const sessionRemainingEl = $('session-remaining');
+  const sessionGateTrackEl = $('session-gate-track');
+  const sessionPlayPauseBtn = $('session-playpause');
+  const sessionPlayPauseIcon = $('session-playpause-icon');
+  const sessionSummaryEl = $('session-summary');
+  const sessionGateListEl = $('session-gate-list');
+  const sessionGateEmptyEl = $('session-gate-empty');
+
+  let pendingGates = [];
+
+  function renderPendingGates() {
+    sessionGateListEl.querySelectorAll('.session-gate-row').forEach((el) => el.remove());
+    sessionGateEmptyEl.hidden = pendingGates.length > 0;
+    for (const gate of pendingGates) {
+      const row = document.createElement('div');
+      row.className = 'session-gate-row';
+      const at = document.createElement('span');
+      at.className = 'at mono';
+      at.textContent = `${gate.atMinutes}m`;
+      row.appendChild(at);
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = gate.label;
+      row.appendChild(label);
+      const remove = document.createElement('button');
+      remove.className = 'item-remove';
+      remove.innerHTML = REMOVE_ICON_SVG;
+      remove.addEventListener('click', () => {
+        pendingGates = pendingGates.filter((g) => g !== gate);
+        renderPendingGates();
+      });
+      row.appendChild(remove);
+      sessionGateListEl.appendChild(row);
+    }
+  }
+
+  $('session-gate-add').addEventListener('click', () => {
+    const atInput = $('session-gate-at');
+    const labelInput = $('session-gate-label');
+    const atMinutes = parseInt(atInput.value, 10);
+    const label = labelInput.value.trim();
+    if (!Number.isFinite(atMinutes) || atMinutes < 0) { showToast('enter a valid gate time first'); return; }
+    if (!label) { showToast('enter a gate label first'); return; }
+    pendingGates.push({ atMinutes, label });
+    pendingGates.sort((a, b) => a.atMinutes - b.atMinutes);
+    renderPendingGates();
+    atInput.value = '';
+    labelInput.value = '';
+  });
+
+  $('session-start').addEventListener('click', () => {
+    const durationMinutes = parseInt($('session-duration').value, 10);
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1) { showToast('enter a valid duration first'); return; }
+    const checkInMinutes = parseInt($('session-checkin').value, 10) || 0;
+    vibrate(20);
+    postJson('/api/session/timer', {
+      durationSeconds: durationMinutes * 60,
+      checkInEverySeconds: checkInMinutes * 60,
+      phaseGates: pendingGates.map((g) => ({ atSeconds: g.atMinutes * 60, label: g.label })),
+      autoStopPlaylistsAtEnd: $('session-auto-stop-playlists').checked,
+    });
+  });
+
+  sessionPlayPauseBtn.addEventListener('click', () => {
+    vibrate(20);
+    postJson(`/api/session/timer/${sessionPlayPauseBtn.dataset.action || 'pause'}`);
+  });
+  $('session-end').addEventListener('click', () => {
+    vibrate(30);
+    postJson('/api/session/end');
+  });
+
+  function renderSessionTimer(session) {
+    const running = session != null;
+    sessionConfigEl.hidden = running;
+    sessionActiveEl.hidden = !running;
+    if (!running) return;
+
+    sessionElapsedEl.textContent = formatMmSs(session.elapsed);
+    sessionDurationDisplayEl.textContent = formatMmSs(session.durationSeconds);
+    sessionRemainingEl.textContent = `${formatMmSs(session.remaining)} remaining`;
+
+    const paused = session.state === 'paused';
+    sessionPlayPauseIcon.innerHTML = paused ? PLAY_ICON_SVG : PAUSE_ICON_SVG;
+    sessionPlayPauseBtn.title = paused ? 'Resume' : 'Pause';
+    sessionPlayPauseBtn.dataset.action = paused ? 'play' : 'pause';
+
+    sessionSummaryEl.textContent = session.nextGateLabel
+      ? `Next gate: ${session.nextGateLabel} at ${formatMmSs(session.nextGateAt)}`
+      : (session.checkInEverySeconds ? `Check-in every ${formatMmSs(session.checkInEverySeconds)}` : '');
+
+    sessionGateTrackEl.innerHTML = '';
+    const gates = session.phaseGates || [];
+    gates.forEach((gate, i) => {
+      if (i > 0) {
+        const line = document.createElement('div');
+        line.className = 'gate-line' + (gate.atSeconds <= session.elapsed ? ' done' : '');
+        sessionGateTrackEl.appendChild(line);
+      }
+      const el = document.createElement('div');
+      const isDone = gate.atSeconds <= session.elapsed;
+      const isNext = session.nextGateAt === gate.atSeconds;
+      el.className = 'gate' + (isDone ? ' done' : '') + (isNext ? ' next' : '');
+      el.innerHTML =
+        '<div class="gate-dot"></div>' +
+        `<div class="gate-label">${gate.label}</div>` +
+        `<div class="gate-eta mono">${formatMmSs(gate.atSeconds)}</div>`;
+      sessionGateTrackEl.appendChild(el);
+    });
+  }
+
   function render(state) {
     const v4Paired = state.v4Status === 'paired';
     const v3Paired = state.status === 'paired';
@@ -429,6 +559,7 @@
     if (!sliderB.isDragging()) sliderB.sync(state.strengthB, state.limitB);
     rampA.render(state.rampA);
     rampB.render(state.rampB);
+    renderSessionTimer(state.sessionTimer);
 
     buttonActionEl.textContent = state.lastButtonAction != null ? state.lastButtonAction : '-';
     $('limit-a-current').textContent = state.limitA != null ? `current: ${state.limitA}` : 'no limit';

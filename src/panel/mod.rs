@@ -25,6 +25,8 @@ pub mod qrcode;
 pub mod ramp;
 pub mod ramp_runner;
 pub mod relay_client;
+pub mod session;
+pub mod session_runner;
 pub mod state;
 pub mod templates;
 pub mod v4_client;

@@ -34,6 +34,7 @@ use crate::v3::protocol::Channel;
 
 use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
 use super::ramp::{RampProfile, RampSnapshot};
+use super::session::{self, SessionConfig, SessionSnapshot, SessionTimer};
 use super::templates::{self, Template};
 use super::webhook;
 
@@ -175,6 +176,13 @@ struct Inner {
     ramp_a: Option<RampSnapshot>,
     ramp_b: Option<RampSnapshot>,
 
+    /// Panel-wide session timer -- unlike playlists/ramps, there's only
+    /// ever one, not one per channel. See [`super::session`] for the
+    /// state machine itself; playback's cancellation token lives
+    /// outside `Inner` (see `session_token` below), mirroring
+    /// `playlist_token_a`/`_b`.
+    session: SessionTimer,
+
     /// Named, reusable playlist definitions -- unlike everything else in
     /// `Inner`, this one survives a process restart (see
     /// [`super::templates`]/[`super::persistence`]); every mutating
@@ -213,6 +221,7 @@ pub struct Snapshot {
     pub playlist_b: PlaylistSnapshot,
     pub ramp_a: Option<RampSnapshot>,
     pub ramp_b: Option<RampSnapshot>,
+    pub session_timer: Option<SessionSnapshot>,
 }
 
 pub struct PanelState {
@@ -233,6 +242,9 @@ pub struct PanelState {
     /// see `Inner::ramp_a`/`_b`'s docs.
     ramp_token_a: Mutex<CancellationToken>,
     ramp_token_b: Mutex<CancellationToken>,
+    /// Same pattern, for the panel-wide session timer -- see
+    /// `Inner::session`'s docs. Singular, not per-channel.
+    session_token: Mutex<CancellationToken>,
 }
 
 impl PanelState {
@@ -271,6 +283,7 @@ impl PanelState {
                 playlist_b: PlaylistQueue::new(),
                 ramp_a: None,
                 ramp_b: None,
+                session: SessionTimer::new(),
                 templates: templates::load_all(),
             }),
             changed,
@@ -280,6 +293,7 @@ impl PanelState {
             playlist_token_b: Mutex::new(CancellationToken::new()),
             ramp_token_a: Mutex::new(CancellationToken::new()),
             ramp_token_b: Mutex::new(CancellationToken::new()),
+            session_token: Mutex::new(CancellationToken::new()),
         }
     }
 
@@ -319,6 +333,7 @@ impl PanelState {
             playlist_b: inner.playlist_b.snapshot(),
             ramp_a: inner.ramp_a,
             ramp_b: inner.ramp_b,
+            session_timer: inner.session.snapshot(),
         }
     }
 
@@ -976,6 +991,98 @@ impl PanelState {
             self.ramp_token_mutex(channel).lock().unwrap().cancel();
             self.notify_changed();
         }
+    }
+
+    // ---- session timer ------------------------------------------------
+
+    fn reset_session_token(&self) -> CancellationToken {
+        let mut guard = self.session_token.lock().unwrap();
+        guard.cancel();
+        *guard = CancellationToken::new();
+        guard.clone()
+    }
+
+    fn cancel_session_token(&self) {
+        self.session_token.lock().unwrap().cancel();
+    }
+
+    /// Starts a fresh session (replacing any existing one outright, same
+    /// "starting a new one always wins" rule as `ramp_start`). Returns
+    /// the full schedule, its total duration, and the token to spawn a
+    /// runner with. Validation (`config.validate()`) is the caller's
+    /// job (`handler::post_session_timer`), same as `post_ramp`
+    /// validates before ever touching `PanelState`.
+    pub fn session_start(
+        &self,
+        config: SessionConfig,
+    ) -> (Vec<session::Checkpoint>, u32, CancellationToken) {
+        let (schedule, total) = {
+            let mut inner = self.inner.lock().unwrap();
+            let total = config.duration_seconds;
+            (inner.session.start(config), total)
+        };
+        let token = self.reset_session_token();
+        self.notify_changed();
+        (schedule, total, token)
+    }
+
+    /// Pauses the session, if one is running. Returns whether it
+    /// actually did anything.
+    pub fn session_pause(&self) -> bool {
+        let paused = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.session.pause()
+        };
+        if paused {
+            self.cancel_session_token();
+            self.notify_changed();
+        }
+        paused
+    }
+
+    /// Resumes a paused session. Returns the remaining schedule, the
+    /// elapsed seconds to resume from, the total duration, and a fresh
+    /// token to spawn a new runner with -- `None` if not paused.
+    pub fn session_resume(
+        &self,
+    ) -> Option<(Vec<session::Checkpoint>, u32, u32, CancellationToken)> {
+        let (schedule, elapsed, total) = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.session.resume()
+        }?;
+        let token = self.reset_session_token();
+        self.notify_changed();
+        Some((schedule, elapsed, total, token))
+    }
+
+    /// Called by the runner after firing the checkpoint at the current
+    /// cursor, to move past it.
+    pub fn session_advance(&self) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.session.advance();
+        }
+        self.notify_changed();
+    }
+
+    /// Stops the session (explicit early end via `POST /api/session/end`,
+    /// or the runner reaching its final checkpoint) and returns the
+    /// config that was active plus the elapsed seconds at the moment of
+    /// stopping, so the caller can log an accurate `session.ended` event
+    /// and honor `autoStopPlaylistsAtEnd`. `None` (and silently a
+    /// no-op -- no log line, no SSE push) if nothing was running, so
+    /// calling `/api/session/end` when there's no session doesn't cause
+    /// a spurious broadcast.
+    pub fn session_stop(&self) -> Option<(SessionConfig, u32)> {
+        let result = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.session.stop()
+        };
+        if result.is_some() {
+            self.cancel_session_token();
+            self.notify_changed();
+        }
+        result
     }
 
     // ---- templates ------------------------------------------------------
