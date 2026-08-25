@@ -202,6 +202,13 @@ pub fn dispatch(panel: &Arc<PanelState>, channel: &str, shape: &str) {
                 send_clear(panel, ch);
                 panel.playlist_stop(ch);
                 panel.ramp_cancel(ch);
+                // Also ends any in-progress `POST /api/session/pause`
+                // cycle (Feature 10) for this channel -- same fix as
+                // `handler::post_session_stop_all`, for the same reason:
+                // an emergency clear is meant to be final, and shouldn't
+                // leave a stale pre-pause value for a later `POST
+                // /api/session/resume` to silently restore.
+                panel.take_pre_pause_strength(ch);
             }
         }
         ButtonAction::RampCancel { channel } => {
@@ -246,6 +253,12 @@ fn apply_strength_delta(panel: &PanelState, channel: Channel, delta: i64) {
 /// the HTTP layer" shape `ramp_runner::send_set` already uses for the
 /// identical class of problem.
 fn apply_strength_target(panel: &PanelState, channel: Channel, target: i64) {
+    // A button-triggered strength change also ends any in-progress
+    // `POST /api/session/pause` cycle for this channel (Feature 10),
+    // same as `handler::post_strength` -- otherwise a later `POST
+    // /api/session/resume` could silently overwrite this with the stale
+    // pre-pause value.
+    panel.take_pre_pause_strength(channel);
     let (current, limit) = panel.strength_and_limit(channel);
     if let Some(limit) = limit
         && target > limit

@@ -72,6 +72,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/session/log-config", post(post_session_log_config))
         .route("/api/session/start", post(post_session_start))
         .route("/api/session/stop", post(post_session_stop_all))
+        .route("/api/session/pause", post(post_session_pause_all))
+        .route("/api/session/resume", post(post_session_resume_all))
         .route("/api/session/checkin", post(post_session_checkin))
         .route("/api/session/recipes", get(get_recipes))
         .route(
@@ -299,6 +301,7 @@ fn ramp_json(ramp: Option<ramp::RampSnapshot>) -> Value {
         "current": r.current,
         "target": r.target,
         "remainingSeconds": r.remaining_secs,
+        "paused": r.paused,
     });
     if let (Value::Object(base_fields), Value::Object(extra_fields)) = (&mut obj, profile_fields) {
         base_fields.extend(extra_fields);
@@ -500,6 +503,14 @@ async fn post_strength(State(state): State<AppState>, Json(body): Json<StrengthB
     // whatever automated ramp was running on this channel. Silent no-op
     // when there wasn't one -- see `PanelState::ramp_cancel`'s docs.
     state.panel.ramp_cancel(channel);
+    // Same override, extended to Feature 10: a manual command also ends
+    // any in-progress `POST /api/session/pause` cycle for this channel,
+    // so a later `POST /api/session/resume` can't silently overwrite a
+    // deliberate manual adjustment made while paused with the stale
+    // pre-pause value. Discards the captured value rather than doing
+    // anything with it -- the manual command the operator just sent *is*
+    // the new intended state.
+    state.panel.take_pre_pause_strength(channel);
     // `set` takes a *logical* target and calibrates it (Feature 9) into
     // the raw wire value below; `inc`/`dec` are relative nudges to the
     // raw current strength and deliberately bypass calibration -- see
@@ -675,6 +686,7 @@ async fn post_ramp(State(state): State<AppState>, Json(body): Json<RampRequestBo
         state.panel.clone(),
         channel,
         profile,
+        ramp::RunnerTick::new(profile),
         token,
     ));
     state.panel.log(format!(
@@ -779,6 +791,13 @@ async fn post_session_end(State(state): State<AppState>) -> Response {
 /// "panic button" endpoint, so every step is unconditional and nothing
 /// here reports partial failure.
 async fn post_session_stop_all(State(state): State<AppState>) -> Response {
+    // Also ends any in-progress `POST /api/session/pause` cycle (Feature
+    // 10) without restoring anything -- an emergency stop is meant to be
+    // final. Without this, a stray `POST /api/session/resume` after this
+    // call would still find the pre-pause strength this never touches
+    // and silently un-zero a channel this was supposed to finally stop.
+    state.panel.take_pre_pause_strength(Channel::A);
+    state.panel.take_pre_pause_strength(Channel::B);
     state.panel.playlist_stop(Channel::A);
     state.panel.playlist_stop(Channel::B);
     state.panel.ramp_cancel(Channel::A);
@@ -812,6 +831,147 @@ async fn post_session_stop_all(State(state): State<AppState>) -> Response {
     state
         .panel
         .log("Emergency stop: cleared both channels, stopped playlists/ramps/timer");
+    StatusCode::OK.into_response()
+}
+
+/// Pauses everything at once (Feature 10): both channels' playlists,
+/// both channels' ramps, and the session timer -- reusing each
+/// subsystem's own existing pause, unchanged, per Mara's answer. Then,
+/// safety-first, actively zeroes both channels' strength (best-effort --
+/// silently skipped if no device is currently paired), recording the
+/// pre-pause value for `POST /api/session/resume` to restore. The zero
+/// bypasses calibration entirely and sends the raw wire value `0`
+/// directly -- the goal is a guaranteed *physical* zero, not a
+/// calibrated logical one that might not actually be zero on the wire.
+async fn post_session_pause_all(State(state): State<AppState>) -> Response {
+    state.panel.playlist_pause(Channel::A);
+    state.panel.playlist_pause(Channel::B);
+    state.panel.ramp_pause(Channel::A);
+    state.panel.ramp_pause(Channel::B);
+    state.panel.session_pause();
+
+    let target_and_tx = state.panel.active_target_and_outbound().ok();
+    for channel in [Channel::A, Channel::B] {
+        // Always attempt the capture, even with no device reachable --
+        // `capture_pre_pause_strength` is what starts this channel's
+        // paused cycle and guards against a second `pause` call
+        // clobbering the original value with the post-pause `0`.
+        if !state.panel.capture_pre_pause_strength(channel) {
+            continue;
+        }
+        let Some((target, tx)) = &target_and_tx else {
+            continue;
+        };
+        let current = state.panel.strength_and_limit(channel).0;
+        let frame = match target {
+            ActiveTarget::V3 {
+                controller_id,
+                device_id,
+            } => Some(commands::strength_frame(
+                controller_id,
+                device_id,
+                channel,
+                commands::StrengthOp::Set(0),
+            )),
+            ActiveTarget::V4 { device_id, slot_id } => v4_commands::strength_frame(
+                device_id,
+                slot_id,
+                channel,
+                commands::StrengthOp::Set(0),
+                current,
+            ),
+        };
+        if let Some(frame) = frame {
+            let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+            state.panel.apply_optimistic_strength(channel, 0);
+        }
+    }
+
+    state.panel.log(
+        "Session paused: playlists/ramps/timer paused, both channels zeroed (strength saved for resume)",
+    );
+    StatusCode::OK.into_response()
+}
+
+/// Resumes everything `POST /api/session/pause` paused, in the
+/// documented order: restores each channel's pre-pause strength first
+/// (bypassing calibration, same as the pause side), *then* resumes
+/// playlists/ramps/timer. Each of those three only actually does
+/// anything for a channel/subsystem that was genuinely paused --
+/// `playlist_is_paused` guards against `playlist_play` also starting a
+/// channel that was merely stopped (never playing) before the pause,
+/// since that same method doubles as "start."
+async fn post_session_resume_all(State(state): State<AppState>) -> Response {
+    let target_and_tx = state.panel.active_target_and_outbound().ok();
+    for channel in [Channel::A, Channel::B] {
+        // Always attempt the take, even with no device reachable -- it's
+        // what ends this channel's paused cycle so a later pause/resume
+        // isn't left stuck thinking one is still in progress.
+        let Some(pre_pause) = state.panel.take_pre_pause_strength(channel) else {
+            continue;
+        };
+        let Some((target, tx)) = &target_and_tx else {
+            continue;
+        };
+        let current = state.panel.strength_and_limit(channel).0;
+        let frame = match target {
+            ActiveTarget::V3 {
+                controller_id,
+                device_id,
+            } => Some(commands::strength_frame(
+                controller_id,
+                device_id,
+                channel,
+                commands::StrengthOp::Set(pre_pause),
+            )),
+            ActiveTarget::V4 { device_id, slot_id } => v4_commands::strength_frame(
+                device_id,
+                slot_id,
+                channel,
+                commands::StrengthOp::Set(pre_pause),
+                current,
+            ),
+        };
+        if let Some(frame) = frame {
+            let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+            state.panel.apply_optimistic_strength(channel, pre_pause);
+        }
+    }
+
+    for channel in [Channel::A, Channel::B] {
+        if state.panel.playlist_is_paused(channel)
+            && let Ok((step, token)) = state.panel.playlist_play(channel)
+        {
+            tokio::spawn(playlist_runner::run(
+                state.panel.clone(),
+                channel,
+                token,
+                step,
+            ));
+        }
+        if let Some((profile, tick, token)) = state.panel.ramp_resume(channel) {
+            tokio::spawn(ramp_runner::run(
+                state.panel.clone(),
+                channel,
+                profile,
+                tick,
+                token,
+            ));
+        }
+    }
+    if let Some((schedule, elapsed, total, token)) = state.panel.session_resume() {
+        tokio::spawn(session_runner::run(
+            state.panel.clone(),
+            schedule,
+            elapsed,
+            total,
+            token,
+        ));
+    }
+
+    state
+        .panel
+        .log("Session resumed: strength restored, playlists/ramps/timer resumed");
     StatusCode::OK.into_response()
 }
 
@@ -996,6 +1156,7 @@ async fn post_recipe_start(State(state): State<AppState>, Path(name): Path<Strin
             state.panel.clone(),
             Channel::A,
             profile,
+            ramp::RunnerTick::new(profile),
             token,
         ));
     }
@@ -1005,6 +1166,7 @@ async fn post_recipe_start(State(state): State<AppState>, Path(name): Path<Strin
             state.panel.clone(),
             Channel::B,
             profile,
+            ramp::RunnerTick::new(profile),
             token,
         ));
     }

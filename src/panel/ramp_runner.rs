@@ -7,11 +7,18 @@
 //! `docs/dg-lab-panel-feature-requests.md`'s Strength Ramp Profiles
 //! section for the full design.
 //!
-//! There's no pause/resume for a ramp, only start/stop -- a manual
-//! `/api/strength` call or `POST /api/ramp/stop` cancels it outright
-//! (see `PanelState::ramp_cancel`) -- so unlike the playlist runner,
-//! this task owns all of its own stepping state (`ramp::RunnerTick`)
-//! locally rather than needing to save/restore it across a pause.
+//! A manual `/api/strength` call or `POST /api/ramp/stop` cancels a
+//! ramp outright, discarding its state (see `PanelState::ramp_cancel`)
+//! -- this task owns its own stepping state (`ramp::RunnerTick`) purely
+//! locally while running, unlike the playlist runner, which reads its
+//! position from `PlaylistQueue` itself. `POST /api/session/pause`
+//! (Feature 10) *does* support pausing a ramp, but without this task's
+//! cooperation: `PanelState::ramp_pause` just cancels the token (this
+//! loop simply exits, see the `token.cancelled()` arm below) and freezes
+//! the last-reported `RampSnapshot` in place; resuming reconstructs an
+//! equivalent starting tick from that snapshot instead of asking this
+//! (by-then-exited) task to hand back its exact internal state -- see
+//! `ramp::RunnerTick::resume_from`.
 
 use std::sync::Arc;
 
@@ -26,13 +33,16 @@ use super::ramp::{RampProfile, RunnerTick};
 use super::state::{ActiveTarget, PanelState};
 use super::v4_commands;
 
+/// `tick` is the starting point: `RunnerTick::new(profile)` for a fresh
+/// start, or `RunnerTick::resume_from(...)` when resuming a paused ramp
+/// (see the module docs).
 pub async fn run(
     panel: Arc<PanelState>,
     channel: Channel,
     profile: RampProfile,
+    mut tick: RunnerTick,
     token: CancellationToken,
 ) {
-    let mut tick = RunnerTick::new(profile);
     let mut last_sent: Option<i64> = None;
 
     loop {

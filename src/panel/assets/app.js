@@ -364,6 +364,7 @@
     const etaEl = $(`ramp-eta-${suffix}`);
     const progressEl = $(`ramp-progress-${suffix}`);
     const profileTagEl = $(`ramp-active-profile-${suffix}`);
+    const pausedTagEl = $(`ramp-paused-tag-${suffix}`);
     const summaryEl = $(`ramp-active-summary-${suffix}`);
 
     return {
@@ -375,6 +376,7 @@
         targetEl.textContent = ramp.target != null ? `${ramp.target} target` : '';
         etaEl.textContent = formatEta(ramp.remainingSeconds);
         profileTagEl.textContent = ramp.profile;
+        pausedTagEl.hidden = !ramp.paused;
         summaryEl.textContent = rampSummary(ramp);
         const total = ramp.profile === 'linear' ? ramp.overSeconds : ramp.durationSeconds;
         const pct = total > 0 ? Math.max(0, Math.min(100, 100 - (ramp.remainingSeconds / total) * 100)) : 0;
@@ -636,6 +638,15 @@
 
   $('recipe-stop-all').addEventListener('click', () => {
     fetch('/api/session/stop', { method: 'POST' }).catch(() => showToast('failed to send emergency stop'));
+  });
+
+  $('session-pause-all').addEventListener('click', () => {
+    vibrate(20);
+    fetch('/api/session/pause', { method: 'POST' }).catch(() => showToast('failed to pause'));
+  });
+  $('session-resume-all').addEventListener('click', () => {
+    vibrate(20);
+    fetch('/api/session/resume', { method: 'POST' }).catch(() => showToast('failed to resume'));
   });
 
   loadRecipes();

@@ -123,12 +123,16 @@
     </div>
     <textarea class="recipe-json mono" id="recipe-json" placeholder='{&#10;  "timer": {"durationSeconds": 1800},&#10;  "playlistA": {"template": "warmup-steady", "shuffle": false},&#10;  "rampA": {"profile": "linear", "from": 10, "to": 30, "overSeconds": 600}&#10;}'></textarea>
     <div class="row" style="margin-top:10px;">
+      <button class="btn small" id="session-pause-all">Pause everything</button>
+      <button class="btn small" id="session-resume-all">Resume everything</button>
       <button class="btn small danger" id="recipe-stop-all">Emergency stop everything</button>
     </div>
     <div class="note">
       A recipe composes a session timer, per-channel playlists (by saved template name), and per-channel ramps into
       one Start button. There's no in-panel recipe builder &mdash; author the JSON above (same shape a saved recipe
       returns from its own GET) and save it, or manage recipes from the Python client.
+      <strong>Pause everything</strong> zeroes both channels' strength (restored on resume) and pauses
+      playlists/ramps/timer; <strong>Emergency stop</strong> is not resumable.
     </div>
   </section>
   <section class="card card-in" style="animation-delay: 120ms;">
@@ -251,6 +255,7 @@
             <div class="ramp-progress-track"><div class="ramp-progress-fill" id="ramp-progress-a"></div></div>
             <div class="ramp-active-meta">
               <span class="tag" id="ramp-active-profile-a"></span>
+              <span class="tag tag-paused" id="ramp-paused-tag-a" hidden>Paused</span>
               <span class="mono" id="ramp-active-summary-a"></span>
               <span style="flex:1"></span>
               <button class="btn small" id="ramp-cancel-a">Cancel ramp</button>
@@ -319,6 +324,7 @@
             <div class="ramp-progress-track"><div class="ramp-progress-fill" id="ramp-progress-b"></div></div>
             <div class="ramp-active-meta">
               <span class="tag" id="ramp-active-profile-b"></span>
+              <span class="tag tag-paused" id="ramp-paused-tag-b" hidden>Paused</span>
               <span class="mono" id="ramp-active-summary-b"></span>
               <span style="flex:1"></span>
               <button class="btn small" id="ramp-cancel-b">Cancel ramp</button>

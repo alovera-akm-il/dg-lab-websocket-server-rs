@@ -182,14 +182,22 @@ pub struct RampSnapshot {
     pub current: i64,
     pub target: Option<i64>,
     pub remaining_secs: u32,
+    /// `true` while paused (Feature 10, `POST /api/session/pause`) --
+    /// the runner task isn't running, but the snapshot is deliberately
+    /// left in place (rather than cleared, the way
+    /// `PanelState::ramp_cancel` does) so `/events` keeps showing the
+    /// frozen readout, and so [`RunnerTick::resume_from`] has something
+    /// to reconstruct from.
+    pub paused: bool,
 }
 
 /// One tick's worth of runner state -- what changes second to second
 /// while a ramp is active, kept out of `RampSnapshot` (a read-only view)
-/// and instead owned by the runner task itself, since none of it needs
-/// to survive a cancellation the way playlist pause/resume state does --
-/// there's no "resume a ramp" concept, only start/stop (see
-/// `docs/dg-lab-panel-feature-requests.md`'s Ramp Profiles section).
+/// and instead owned by the runner task itself while running. A paused
+/// ramp doesn't preserve this exactly (the runner task that owned it has
+/// already exited) -- see [`RunnerTick::resume_from`], which
+/// reconstructs an equivalent tick from the frozen `RampSnapshot`
+/// instead.
 pub struct RunnerTick {
     pub elapsed_secs: u32,
     pub rolled: i64,
@@ -206,6 +214,34 @@ impl RunnerTick {
             elapsed_secs: 0,
             rolled,
             next_reroll_at: 0,
+        }
+    }
+
+    /// Reconstructs tick state to resume a paused ramp (Feature 10) from
+    /// its last known [`RampSnapshot`], without the original runner
+    /// task's cooperation -- `PanelState::ramp_pause` just cancels its
+    /// token and freezes the snapshot in place, it doesn't ask the task
+    /// to hand back its exact internal state before exiting.
+    ///
+    /// `elapsed_secs` is derived from `remaining_secs`, which is already
+    /// kept fresh to within the last 1-second tick by `PanelState::ramp_tick`
+    /// -- the same granularity a real tick boundary has anyway. For
+    /// `Linear`/`Hold`, `value_at(elapsed_secs)` is a pure function of
+    /// that alone, so this is an exact continuation.
+    ///
+    /// For `RandomWalk` it's an approximation, not a byte-exact replay
+    /// of the original roll schedule: `rolled` is seeded from `current`
+    /// (the last value actually sent) and `next_reroll_at` is set to
+    /// `elapsed_secs` so the walk re-rolls on its very next tick. The
+    /// walk picks up from wherever it was and keeps wandering, rather
+    /// than resuming mid-step at a re-derived point in a step it has no
+    /// record of.
+    pub fn resume_from(profile: RampProfile, current: i64, remaining_secs: u32) -> Self {
+        let elapsed_secs = profile.total_seconds().saturating_sub(remaining_secs);
+        RunnerTick {
+            elapsed_secs,
+            rolled: current,
+            next_reroll_at: elapsed_secs,
         }
     }
 
@@ -474,5 +510,59 @@ mod tests {
             None,
             "the ramp ends the tick *after* reaching the target"
         );
+    }
+
+    #[test]
+    fn resume_from_reconstructs_elapsed_secs_from_remaining_and_continues_a_linear_ramp() {
+        let p = RampProfile::Linear {
+            from: 0,
+            to: 100,
+            over_seconds: 100,
+        };
+        // Paused with 60s remaining out of 100s total -- elapsed was 40.
+        let mut tick = RunnerTick::resume_from(p, 40, 60);
+        assert_eq!(tick.elapsed_secs, 40);
+        assert_eq!(
+            tick.step(p, None),
+            Some(40),
+            "picks up exactly where it left off"
+        );
+        tick.elapsed_secs += 1;
+        assert_eq!(
+            tick.step(p, None),
+            Some(41),
+            "and keeps interpolating normally"
+        );
+    }
+
+    #[test]
+    fn resume_from_seeds_a_random_walk_from_its_last_sent_value_and_rerolls_immediately() {
+        let p = RampProfile::RandomWalk {
+            base: 30,
+            variance: 5,
+            step_seconds: 10,
+            duration_seconds: 100,
+        };
+        // Paused at a value the walk had wandered to (37, not `base`), 60s remaining.
+        let mut tick = RunnerTick::resume_from(p, 37, 60);
+        assert_eq!(tick.elapsed_secs, 40);
+        assert_eq!(
+            tick.next_reroll_at, 40,
+            "rerolls on the very next tick rather than replaying the original schedule"
+        );
+        // The reroll draws from `base +/- variance`, not from the resumed
+        // value -- confirms this is a fresh roll, not a frozen replay.
+        let first = tick.step(p, None).unwrap();
+        assert!((25..=35).contains(&first));
+    }
+
+    #[test]
+    fn resume_from_a_fully_elapsed_remaining_time_still_produces_a_valid_tick() {
+        let p = RampProfile::Hold {
+            value: 25,
+            duration_seconds: 60,
+        };
+        let tick = RunnerTick::resume_from(p, 25, 0);
+        assert_eq!(tick.elapsed_secs, 60);
     }
 }

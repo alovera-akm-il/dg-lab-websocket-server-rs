@@ -37,7 +37,7 @@ use super::button_map::{self, ButtonAction, ButtonMap};
 use super::calibration::{self, Calibration, ChannelCalibration};
 use super::event_log::{EventLogConfig, EventLogMsg};
 use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
-use super::ramp::{RampProfile, RampSnapshot};
+use super::ramp::{RampProfile, RampSnapshot, RunnerTick};
 use super::recipe::{self, Recipe};
 use super::session::{self, SessionConfig, SessionSnapshot, SessionTimer};
 use super::templates::{self, Template};
@@ -243,6 +243,16 @@ struct Inner {
     /// survives a process restart (see
     /// [`super::calibration`]/[`super::persistence`]).
     calibration: Calibration,
+
+    /// Whether `POST /api/session/pause` (Feature 10) has zeroed this
+    /// channel's strength and is holding a pre-pause value to restore.
+    /// In-memory only, per Mara's answer -- a panel restart during a
+    /// pause is effectively an emergency stop anyway, so there's nothing
+    /// to preserve across it.
+    strength_pause_active_a: bool,
+    strength_pause_active_b: bool,
+    pre_pause_strength_a: Option<i64>,
+    pre_pause_strength_b: Option<i64>,
 }
 
 pub struct Snapshot {
@@ -354,6 +364,10 @@ impl PanelState {
                 recipes: recipe::load_all(),
                 last_check_in: None,
                 calibration: calibration::load(),
+                strength_pause_active_a: false,
+                strength_pause_active_b: false,
+                pre_pause_strength_a: None,
+                pre_pause_strength_b: None,
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
@@ -1001,7 +1015,17 @@ impl PanelState {
     /// (`profile.validate()`, the upper-limit check) is the caller's
     /// job (`handler::post_ramp`), same as `post_strength` validates
     /// before ever touching `PanelState`.
+    ///
+    /// Also ends any in-progress `POST /api/session/pause` cycle
+    /// (Feature 10) for `channel`, same reasoning as `post_strength`'s
+    /// fix: a fresh ramp is about to start driving this channel's
+    /// strength itself, so a later `POST /api/session/resume` must not
+    /// clobber its progress by restoring a stale pre-pause value over
+    /// it. [`Self::ramp_resume`] is a separate method with its own,
+    /// unrelated paused-ramp state, so resuming a *paused ramp* is
+    /// unaffected by this.
     pub fn ramp_start(&self, channel: Channel, profile: RampProfile) -> CancellationToken {
+        self.take_pre_pause_strength(channel);
         {
             let mut inner = self.inner.lock().unwrap();
             *ramp_mut(&mut inner, channel) = Some(RampSnapshot {
@@ -1009,6 +1033,7 @@ impl PanelState {
                 current: profile.initial_value(),
                 target: profile.target(None),
                 remaining_secs: profile.total_seconds(),
+                paused: false,
             });
         }
         let mut guard = self.ramp_token_mutex(channel).lock().unwrap();
@@ -1073,6 +1098,62 @@ impl PanelState {
             self.ramp_token_mutex(channel).lock().unwrap().cancel();
             self.notify_changed();
         }
+    }
+
+    /// Pauses `channel`'s ramp (Feature 10), if one is currently running:
+    /// cancels its runner task (which simply exits, see
+    /// `ramp_runner::run`'s docs) but -- unlike [`Self::ramp_cancel`] --
+    /// leaves its `RampSnapshot` in place, marked `paused`, so `/events`
+    /// keeps showing the frozen readout and [`Self::ramp_resume`] has
+    /// something to reconstruct from. A no-op (returns `false`) if
+    /// nothing is running or it's already paused.
+    pub fn ramp_pause(&self, channel: Channel) -> bool {
+        let paused = {
+            let mut inner = self.inner.lock().unwrap();
+            match ramp_mut(&mut inner, channel) {
+                Some(snap) if !snap.paused => {
+                    snap.paused = true;
+                    true
+                }
+                _ => false,
+            }
+        };
+        if paused {
+            self.ramp_token_mutex(channel).lock().unwrap().cancel();
+            self.notify_changed();
+        }
+        paused
+    }
+
+    /// Resumes `channel`'s paused ramp, if any: reconstructs a starting
+    /// [`RunnerTick`] from the frozen snapshot (see
+    /// `RunnerTick::resume_from`'s docs on the `RandomWalk`
+    /// approximation), issues a fresh token, and returns everything the
+    /// caller needs to spawn a new `ramp_runner::run` task. `None` if
+    /// nothing was paused.
+    pub fn ramp_resume(
+        &self,
+        channel: Channel,
+    ) -> Option<(RampProfile, RunnerTick, CancellationToken)> {
+        let resumed = {
+            let mut inner = self.inner.lock().unwrap();
+            match ramp_mut(&mut inner, channel) {
+                Some(snap) if snap.paused => {
+                    snap.paused = false;
+                    Some((snap.profile, snap.current, snap.remaining_secs))
+                }
+                _ => None,
+            }
+        }?;
+        let (profile, current, remaining_secs) = resumed;
+        let tick = RunnerTick::resume_from(profile, current, remaining_secs);
+        let mut guard = self.ramp_token_mutex(channel).lock().unwrap();
+        guard.cancel();
+        *guard = CancellationToken::new();
+        let token = guard.clone();
+        drop(guard);
+        self.notify_changed();
+        Some((profile, tick, token))
     }
 
     // ---- session timer ------------------------------------------------
@@ -1351,6 +1432,70 @@ impl PanelState {
             Channel::B => &inner.playlist_b,
         };
         queue.phase() == playlist::Phase::Playing
+    }
+
+    /// Whether `channel`'s playlist is specifically *paused* (not just
+    /// stopped/idle) -- used by `handler::post_session_resume_all`
+    /// (Feature 10) to decide whether calling `playlist_play` would
+    /// actually be a *resume*, since that same method also doubles as
+    /// "start a stopped-but-non-empty queue from the top," which a
+    /// blanket "resume everything" call must not accidentally trigger
+    /// for a channel that was never playing before the pause.
+    pub fn playlist_is_paused(&self, channel: Channel) -> bool {
+        let inner = self.inner.lock().unwrap();
+        let queue = match channel {
+            Channel::A => &inner.playlist_a,
+            Channel::B => &inner.playlist_b,
+        };
+        queue.phase() == playlist::Phase::Paused
+    }
+
+    // ---- global pause/resume (Feature 10) --------------------------------
+
+    /// Captures `channel`'s current strength for later restore via
+    /// [`Self::take_pre_pause_strength`], and marks it "strength-paused"
+    /// -- a no-op (returns `false`) if this channel is already in a
+    /// paused cycle, so calling `POST /api/session/pause` again without
+    /// an intervening resume can't clobber the originally-captured value
+    /// with `0` (its own post-pause reading).
+    pub fn capture_pre_pause_strength(&self, channel: Channel) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        let current = match channel {
+            Channel::A => inner.strength_a,
+            Channel::B => inner.strength_b,
+        };
+        let active = match channel {
+            Channel::A => &mut inner.strength_pause_active_a,
+            Channel::B => &mut inner.strength_pause_active_b,
+        };
+        if *active {
+            return false;
+        }
+        *active = true;
+        let slot = match channel {
+            Channel::A => &mut inner.pre_pause_strength_a,
+            Channel::B => &mut inner.pre_pause_strength_b,
+        };
+        *slot = current;
+        true
+    }
+
+    /// Ends `channel`'s strength-paused cycle (if one is active,
+    /// otherwise a no-op) and returns the captured pre-pause strength to
+    /// restore -- `None` either because nothing was paused, or because
+    /// the strength wasn't known yet at pause time (nothing meaningful
+    /// to restore either way).
+    pub fn take_pre_pause_strength(&self, channel: Channel) -> Option<i64> {
+        let mut inner = self.inner.lock().unwrap();
+        match channel {
+            Channel::A => inner.strength_pause_active_a = false,
+            Channel::B => inner.strength_pause_active_b = false,
+        }
+        let slot = match channel {
+            Channel::A => &mut inner.pre_pause_strength_a,
+            Channel::B => &mut inner.pre_pause_strength_b,
+        };
+        slot.take()
     }
 }
 
@@ -2014,5 +2159,112 @@ mod tests {
             ChannelCalibration::default()
         );
         assert_eq!(state.calibration_get().channel_a.gain, 2.0);
+    }
+
+    #[test]
+    fn ramp_pause_freezes_the_snapshot_and_resume_reconstructs_a_tick() {
+        let state = PanelState::new();
+        let profile = RampProfile::Linear {
+            from: 0,
+            to: 100,
+            over_seconds: 100,
+        };
+        state.ramp_start(Channel::A, profile);
+        state.ramp_tick(Channel::A, 40, Some(100), 60);
+
+        assert!(state.ramp_pause(Channel::A));
+        let snap = state.snapshot().ramp_a.expect("snapshot kept after pause");
+        assert!(snap.paused);
+        assert_eq!(snap.current, 40);
+
+        // A second pause without an intervening resume is a no-op.
+        assert!(!state.ramp_pause(Channel::A));
+
+        let (resumed_profile, tick, _token) = state.ramp_resume(Channel::A).expect("should resume");
+        assert_eq!(resumed_profile, profile);
+        assert_eq!(tick.elapsed_secs, 40);
+        assert!(!state.snapshot().ramp_a.unwrap().paused);
+
+        // Resuming again with nothing paused is a no-op.
+        assert!(state.ramp_resume(Channel::A).is_none());
+    }
+
+    #[test]
+    fn ramp_pause_is_a_no_op_when_nothing_is_running() {
+        let state = PanelState::new();
+        assert!(!state.ramp_pause(Channel::A));
+        assert!(state.snapshot().ramp_a.is_none());
+    }
+
+    #[test]
+    fn playlist_is_paused_reflects_the_queue_phase() {
+        let state = PanelState::new();
+        assert!(!state.playlist_is_paused(Channel::A));
+
+        state.playlist_add(
+            Channel::A,
+            playlist::EntryKind::Gap,
+            playlist::DurationSpec::Fixed(5),
+        );
+        state.playlist_play(Channel::A).unwrap();
+        assert!(!state.playlist_is_paused(Channel::A));
+
+        state.playlist_pause(Channel::A);
+        assert!(state.playlist_is_paused(Channel::A));
+
+        state.playlist_stop(Channel::A);
+        assert!(!state.playlist_is_paused(Channel::A));
+    }
+
+    #[test]
+    fn pre_pause_strength_capture_is_idempotent_until_taken() {
+        let state = PanelState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        state.set_connected("c".into(), tx);
+        state.set_paired("d".into());
+        state.set_device_strength(55, 0, 100, 100);
+
+        assert!(state.capture_pre_pause_strength(Channel::A));
+        // Simulate the strength having been zeroed after capture, the
+        // way `post_session_pause_all` does before this could be called
+        // again.
+        state.apply_optimistic_strength(Channel::A, 0);
+
+        // A second capture without an intervening take must not
+        // clobber the original 55 with the post-zero reading of 0.
+        assert!(!state.capture_pre_pause_strength(Channel::A));
+
+        assert_eq!(state.take_pre_pause_strength(Channel::A), Some(55));
+        // Taken -- a second take (nothing left to restore) returns None.
+        assert_eq!(state.take_pre_pause_strength(Channel::A), None);
+
+        // A fresh capture after a take starts a new cycle correctly.
+        state.apply_optimistic_strength(Channel::A, 20);
+        assert!(state.capture_pre_pause_strength(Channel::A));
+        assert_eq!(state.take_pre_pause_strength(Channel::A), Some(20));
+    }
+
+    #[test]
+    fn ramp_start_ends_a_pending_pause_cycle_so_resume_cannot_clobber_it() {
+        // Regression test for a real bug found while reviewing the
+        // design: starting a fresh ramp on a channel that has a pending
+        // `POST /api/session/pause` capture must discard that capture --
+        // otherwise a later `POST /api/session/resume` would restore the
+        // stale pre-pause value over the ramp's own progress.
+        let state = PanelState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        state.set_connected("c".into(), tx);
+        state.set_paired("d".into());
+        state.set_device_strength(55, 0, 100, 100);
+
+        assert!(state.capture_pre_pause_strength(Channel::A));
+        state.ramp_start(
+            Channel::A,
+            RampProfile::Hold {
+                value: 30,
+                duration_seconds: 60,
+            },
+        );
+        assert_eq!(state.take_pre_pause_strength(Channel::A), None);
     }
 }
