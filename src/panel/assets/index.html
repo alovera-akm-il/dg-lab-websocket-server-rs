@@ -194,6 +194,7 @@
         <div class="channel-head">
           <span class="channel-title">Channel A</span>
           <span class="channel-value mono" id="strength-a-inline">-<span class="cap" id="strength-a-cap"></span></span>
+          <span class="logical-value mono" id="strength-a-logical"></span>
         </div>
         <div class="slider-row">
           <input type="range" class="strength-slider" id="slider-a" min="0" max="200" step="1" value="0" data-channel="A">
@@ -208,6 +209,12 @@
           <button class="btn small" data-limit-set="A" data-value-input="limit-a-value">Set</button>
           <button class="btn small" data-limit-clear="A">Clear</button>
           <span class="limit-current mono" id="limit-a-current">no limit</span>
+        </div>
+        <div class="row calibration-row">
+          <label for="cal-a-gain">Calibration</label>
+          <input type="number" id="cal-a-gain" min="0.1" max="5" step="0.1" placeholder="gain">
+          <input type="number" id="cal-a-offset" min="-50" max="50" step="1" placeholder="offset">
+          <button class="btn small" data-calibration-set="A">Set</button>
         </div>
 
         <div class="ramp-block" id="ramp-block-a">
@@ -255,6 +262,7 @@
         <div class="channel-head">
           <span class="channel-title">Channel B</span>
           <span class="channel-value mono" id="strength-b-inline">-<span class="cap" id="strength-b-cap"></span></span>
+          <span class="logical-value mono" id="strength-b-logical"></span>
         </div>
         <div class="slider-row">
           <input type="range" class="strength-slider" id="slider-b" min="0" max="200" step="1" value="0" data-channel="B">
@@ -269,6 +277,12 @@
           <button class="btn small" data-limit-set="B" data-value-input="limit-b-value">Set</button>
           <button class="btn small" data-limit-clear="B">Clear</button>
           <span class="limit-current mono" id="limit-b-current">no limit</span>
+        </div>
+        <div class="row calibration-row">
+          <label for="cal-b-gain">Calibration</label>
+          <input type="number" id="cal-b-gain" min="0.1" max="5" step="0.1" placeholder="gain">
+          <input type="number" id="cal-b-offset" min="-50" max="50" step="1" placeholder="offset">
+          <button class="btn small" data-calibration-set="B">Set</button>
         </div>
 
         <div class="ramp-block" id="ramp-block-b">

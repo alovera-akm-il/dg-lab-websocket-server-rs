@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::v3::protocol::Channel;
 
+use super::calibration;
 use super::commands::{self, StrengthOp};
 use super::ramp::{RampProfile, RunnerTick};
 use super::state::{ActiveTarget, PanelState};
@@ -72,13 +73,16 @@ pub async fn run(
 }
 
 /// Sends one `Set` command through the exact functions `POST
-/// /api/strength` already uses. Failures (no device paired, relay not
-/// ready, or -- V4 only -- no known baseline strength to compute a
-/// delta from yet) are logged and the tick is simply skipped, the same
-/// policy `playlist_runner::dispatch` already uses for the identical
-/// class of problem: the ramp's own clock keeps advancing regardless
-/// of whether this particular tick could actually reach the device,
-/// rather than getting stuck retrying.
+/// /api/strength` already uses, converting `value` -- the ramp's own
+/// *logical* target, per `profile`'s configured curve -- into the raw
+/// wire value via the channel's calibration (Feature 9) first, the same
+/// as every other absolute-target strength command. Failures (no device
+/// paired, relay not ready, or -- V4 only -- no known baseline strength
+/// to compute a delta from yet) are logged and the tick is simply
+/// skipped, the same policy `playlist_runner::dispatch` already uses
+/// for the identical class of problem: the ramp's own clock keeps
+/// advancing regardless of whether this particular tick could actually
+/// reach the device, rather than getting stuck retrying.
 async fn send_set(panel: &PanelState, channel: Channel, value: i64) {
     let (target, tx) = match panel.active_target_and_outbound() {
         Ok(pair) => pair,
@@ -91,6 +95,16 @@ async fn send_set(panel: &PanelState, channel: Channel, value: i64) {
         }
     };
     let current = panel.strength_and_limit(channel).0;
+    let raw_value = match calibration::apply_checked(panel.calibration_for(channel), value) {
+        Ok(v) => v,
+        Err(message) => {
+            panel.log(format!(
+                "Ramp channel {}: {message} -- tick skipped",
+                commands::channel_str(channel)
+            ));
+            return;
+        }
+    };
     let frame = match &target {
         ActiveTarget::V3 {
             controller_id,
@@ -99,13 +113,13 @@ async fn send_set(panel: &PanelState, channel: Channel, value: i64) {
             controller_id,
             device_id,
             channel,
-            StrengthOp::Set(value),
+            StrengthOp::Set(raw_value),
         )),
         ActiveTarget::V4 { device_id, slot_id } => v4_commands::strength_frame(
             device_id,
             slot_id,
             channel,
-            StrengthOp::Set(value),
+            StrengthOp::Set(raw_value),
             current,
         ),
     };
@@ -124,6 +138,6 @@ async fn send_set(panel: &PanelState, channel: Channel, value: i64) {
         ));
         return;
     }
-    panel.apply_optimistic_strength(channel, value);
+    panel.apply_optimistic_strength(channel, raw_value);
     panel.log(format!("Ramp sent: {text}"));
 }

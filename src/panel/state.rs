@@ -34,6 +34,7 @@ use uuid::Uuid;
 use crate::v3::protocol::Channel;
 
 use super::button_map::{self, ButtonAction, ButtonMap};
+use super::calibration::{self, Calibration, ChannelCalibration};
 use super::event_log::{EventLogConfig, EventLogMsg};
 use super::playlist::{self, PlaylistEntry, PlaylistQueue, PlaylistSnapshot};
 use super::ramp::{RampProfile, RampSnapshot};
@@ -237,6 +238,11 @@ struct Inner {
     /// like the log/webhook events it's logged alongside, not persisted
     /// to disk.
     last_check_in: Option<CheckIn>,
+
+    /// Per-channel intensity calibration -- like templates/recipes,
+    /// survives a process restart (see
+    /// [`super::calibration`]/[`super::persistence`]).
+    calibration: Calibration,
 }
 
 pub struct Snapshot {
@@ -271,6 +277,7 @@ pub struct Snapshot {
     pub ramp_b: Option<RampSnapshot>,
     pub session_timer: Option<SessionSnapshot>,
     pub last_check_in: Option<CheckIn>,
+    pub calibration: Calibration,
 }
 
 pub struct PanelState {
@@ -346,6 +353,7 @@ impl PanelState {
                 button_map: button_map::load(),
                 recipes: recipe::load_all(),
                 last_check_in: None,
+                calibration: calibration::load(),
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
@@ -397,6 +405,7 @@ impl PanelState {
             ramp_b: inner.ramp_b,
             session_timer: inner.session.snapshot(),
             last_check_in: inner.last_check_in.clone(),
+            calibration: inner.calibration,
         }
     }
 
@@ -1248,6 +1257,36 @@ impl PanelState {
         self.notify_changed();
     }
 
+    // ---- calibration (Feature 9) --------------------------------------
+
+    pub fn calibration_get(&self) -> Calibration {
+        self.inner.lock().unwrap().calibration
+    }
+
+    /// Overwrites the whole calibration config and persists it to disk
+    /// (outside the lock) -- validation (`Calibration::validate`) is the
+    /// caller's job (`handler::post_calibration`), same as every other
+    /// validated config store.
+    pub fn calibration_set(&self, cal: Calibration) {
+        {
+            self.inner.lock().unwrap().calibration = cal;
+        }
+        calibration::save(&cal);
+        self.notify_changed();
+    }
+
+    /// `channel`'s calibration, for the call sites that need to convert
+    /// a logical target into a raw wire value (`handler::post_strength`/
+    /// `post_ramp`, `ramp_runner::send_set`, `button_map`'s
+    /// `strength_set` action).
+    pub fn calibration_for(&self, channel: Channel) -> ChannelCalibration {
+        let inner = self.inner.lock().unwrap();
+        match channel {
+            Channel::A => inner.calibration.channel_a,
+            Channel::B => inner.calibration.channel_b,
+        }
+    }
+
     // ---- event log ------------------------------------------------------
 
     /// Wires up the event-log writer task's channel -- called once by
@@ -1939,5 +1978,41 @@ mod tests {
         assert_eq!(transitions[0].channel, Channel::A);
         assert_eq!(transitions[0].status, "entered");
         assert_eq!(transitions[0].issue, "open_circuit");
+    }
+
+    #[test]
+    fn calibration_defaults_to_a_no_op_and_reads_back_correctly() {
+        let state = PanelState::new();
+        assert_eq!(
+            state.calibration_for(Channel::A),
+            ChannelCalibration::default()
+        );
+
+        let cal = Calibration {
+            channel_a: ChannelCalibration {
+                gain: 2.0,
+                offset: 5.0,
+            },
+            channel_b: ChannelCalibration::default(),
+        };
+        // Set directly on `Inner` rather than through the public
+        // `calibration_set`, which also persists to `PANEL_DATA_DIR` --
+        // avoiding a real filesystem write (into this repo's actual
+        // `panel-data/` directory) as a side effect of a unit test. The
+        // persistence layer itself is already covered by
+        // `persistence.rs`'s own tests.
+        state.inner.lock().unwrap().calibration = cal;
+        assert_eq!(
+            state.calibration_for(Channel::A),
+            ChannelCalibration {
+                gain: 2.0,
+                offset: 5.0
+            }
+        );
+        assert_eq!(
+            state.calibration_for(Channel::B),
+            ChannelCalibration::default()
+        );
+        assert_eq!(state.calibration_get().channel_a.gain, 2.0);
     }
 }

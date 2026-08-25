@@ -22,6 +22,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use uuid::Uuid;
 
 use super::button_map::ButtonMap;
+use super::calibration::{self, Calibration};
 use super::config::Config;
 use super::event_log::EventLogConfig;
 use super::ramp::{self, RampProfile};
@@ -58,6 +59,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/clear", post(post_clear))
         .route("/api/pulse", post(post_pulse))
         .route("/api/limit", post(post_limit))
+        .route(
+            "/api/calibration",
+            get(get_calibration).post(post_calibration),
+        )
         .route("/api/ramp", post(post_ramp))
         .route("/api/ramp/stop", post(post_ramp_stop))
         .route("/api/session/timer", post(post_session_timer))
@@ -213,6 +218,9 @@ fn snapshot_json(
         "activeProtocol": snapshot.active_protocol.map(|p| p.as_str()),
         "strengthA": snapshot.strength_a,
         "strengthB": snapshot.strength_b,
+        "logicalStrengthA": snapshot.strength_a.map(|v| calibration::invert(snapshot.calibration.channel_a, v)),
+        "logicalStrengthB": snapshot.strength_b.map(|v| calibration::invert(snapshot.calibration.channel_b, v)),
+        "calibration": snapshot.calibration,
         "softLimitA": snapshot.soft_limit_a,
         "softLimitB": snapshot.soft_limit_b,
         "lastButtonAction": snapshot.last_button_action,
@@ -492,10 +500,20 @@ async fn post_strength(State(state): State<AppState>, Json(body): Json<StrengthB
     // whatever automated ramp was running on this channel. Silent no-op
     // when there wasn't one -- see `PanelState::ramp_cancel`'s docs.
     state.panel.ramp_cancel(channel);
+    // `set` takes a *logical* target and calibrates it (Feature 9) into
+    // the raw wire value below; `inc`/`dec` are relative nudges to the
+    // raw current strength and deliberately bypass calibration -- see
+    // `calibration`'s module docs for why.
     let op = match body.op.as_str() {
         "inc" => commands::StrengthOp::Inc,
         "dec" => commands::StrengthOp::Dec,
-        "set" => commands::StrengthOp::Set(body.value.unwrap_or(0)),
+        "set" => {
+            let cal = state.panel.calibration_for(channel);
+            match calibration::apply_checked(cal, body.value.unwrap_or(0)) {
+                Ok(raw) => commands::StrengthOp::Set(raw),
+                Err(message) => return error_response(StatusCode::BAD_REQUEST, &message),
+            }
+        }
         _ => return error_response(StatusCode::BAD_REQUEST, "invalid op"),
     };
 
@@ -581,6 +599,28 @@ async fn post_limit(State(state): State<AppState>, Json(body): Json<LimitBody>) 
     StatusCode::OK.into_response()
 }
 
+// ---- calibration (Feature 9) ---------------------------------------
+
+/// `GET` isn't in the original request's own API table (only `POST` is)
+/// -- added for symmetry with every other config-like store (templates,
+/// button map, recipes all have one) and because the panel UI needs to
+/// read the current values back into its calibration form.
+async fn get_calibration(State(state): State<AppState>) -> Json<Calibration> {
+    Json(state.panel.calibration_get())
+}
+
+async fn post_calibration(
+    State(state): State<AppState>,
+    Json(body): Json<Calibration>,
+) -> Response {
+    if let Err(message) = body.validate() {
+        return error_response(StatusCode::BAD_REQUEST, &message);
+    }
+    state.panel.calibration_set(body);
+    state.panel.log("Calibration updated");
+    StatusCode::OK.into_response()
+}
+
 // ---- ramps --------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -600,15 +640,30 @@ async fn post_ramp(State(state): State<AppState>, Json(body): Json<RampRequestBo
     }
     // `RandomWalk` has no fixed peak -- its steps are clamped into the
     // limit individually by the runner instead (see `ramp::RunnerTick::step`).
+    // The limit is a physical-output ceiling (Feature 9), so this checks
+    // the calibrated (raw) peak, not the logical one the profile names.
     if let Some(peak) = profile.peak_value() {
         let limit = state.panel.strength_and_limit(channel).1;
+        let raw_peak = match calibration::apply_checked(state.panel.calibration_for(channel), peak)
+        {
+            Ok(v) => v,
+            Err(message) => {
+                return error_response(
+                    StatusCode::BAD_REQUEST,
+                    &format!(
+                        "channel {} ramp target {peak}: {message}",
+                        commands::channel_str(channel)
+                    ),
+                );
+            }
+        };
         if let Some(limit) = limit
-            && peak > limit
+            && raw_peak > limit
         {
             return error_response(
                 StatusCode::BAD_REQUEST,
                 &format!(
-                    "channel {} ramp target {peak} would exceed the configured upper limit of {limit}",
+                    "channel {} ramp target {peak} (raw {raw_peak} after calibration) would exceed the configured upper limit of {limit}",
                     commands::channel_str(channel)
                 ),
             );

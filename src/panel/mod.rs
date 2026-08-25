@@ -14,6 +14,7 @@
 
 mod assets;
 pub mod button_map;
+pub mod calibration;
 pub mod commands;
 pub mod config;
 pub mod event_log;

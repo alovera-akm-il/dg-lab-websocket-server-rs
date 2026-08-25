@@ -30,6 +30,7 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use crate::v3::protocol::Channel;
 
+use super::calibration;
 use super::commands::{self, StrengthOp};
 use super::persistence;
 use super::playlist_runner;
@@ -176,8 +177,19 @@ pub fn dispatch(panel: &Arc<PanelState>, channel: &str, shape: &str) {
             }
         }
         ButtonAction::StrengthSet { channel, value } => {
+            // `value` is a *logical* target (Feature 9) -- calibrated
+            // into a raw wire value here, unlike `StrengthInc`/`_Dec`/
+            // `_Delta` below, which nudge the raw current strength
+            // directly and deliberately bypass calibration (see
+            // `calibration`'s module docs).
             for &ch in channel.channels() {
-                apply_strength_target(panel, ch, value);
+                match calibration::apply_checked(panel.calibration_for(ch), value) {
+                    Ok(raw) => apply_strength_target(panel, ch, raw),
+                    Err(message) => panel.log(format!(
+                        "Button map: channel {} {message} -- skipped",
+                        commands::channel_str(ch)
+                    )),
+                }
             }
         }
         ButtonAction::StrengthDelta { channel, delta } => {

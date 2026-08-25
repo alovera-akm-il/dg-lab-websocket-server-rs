@@ -6,6 +6,8 @@
   const strengthBInlineEl = $('strength-b-inline');
   const strengthACapEl = $('strength-a-cap');
   const strengthBCapEl = $('strength-b-cap');
+  const strengthALogicalEl = $('strength-a-logical');
+  const strengthBLogicalEl = $('strength-b-logical');
   const sliderAEl = $('slider-a');
   const sliderBEl = $('slider-b');
   const buttonActionEl = $('button-action');
@@ -689,6 +691,8 @@
     buttonActionEl.textContent = state.lastButtonAction != null ? state.lastButtonAction : '-';
     $('limit-a-current').textContent = state.limitA != null ? `current: ${state.limitA}` : 'no limit';
     $('limit-b-current').textContent = state.limitB != null ? `current: ${state.limitB}` : 'no limit';
+    strengthALogicalEl.textContent = state.logicalStrengthA != null ? `(logical: ${state.logicalStrengthA})` : '';
+    strengthBLogicalEl.textContent = state.logicalStrengthB != null ? `(logical: ${state.logicalStrengthB})` : '';
     webhookCurrentEl.textContent = state.webhookUrl ? `Current: ${state.webhookUrl}` : 'No webhook configured.';
 
     const log = state.log || [];
@@ -764,6 +768,31 @@
   document.querySelectorAll('[data-limit-clear]').forEach((btn) => {
     const channel = btn.getAttribute('data-limit-clear');
     btn.addEventListener('click', () => postJson('/api/limit', { channel, value: null }));
+  });
+
+  // -- calibration: loaded once on page load (like button map/recipes),
+  // not kept live-synced from the SSE stream, so an in-progress edit in
+  // the gain/offset fields is never clobbered by a snapshot update.
+  function loadCalibration() {
+    fetch('/api/calibration').then((r) => r.json()).then((cal) => {
+      $('cal-a-gain').value = cal.channelA.gain;
+      $('cal-a-offset').value = cal.channelA.offset;
+      $('cal-b-gain').value = cal.channelB.gain;
+      $('cal-b-offset').value = cal.channelB.offset;
+    }).catch(() => showToast('failed to load calibration'));
+  }
+  loadCalibration();
+
+  document.querySelectorAll('[data-calibration-set]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const gainA = parseFloat($('cal-a-gain').value);
+      const gainB = parseFloat($('cal-b-gain').value);
+      if (!Number.isFinite(gainA) || !Number.isFinite(gainB)) { showToast('enter a gain for both channels first'); return; }
+      postJson('/api/calibration', {
+        channelA: { gain: gainA, offset: parseFloat($('cal-a-offset').value) || 0 },
+        channelB: { gain: gainB, offset: parseFloat($('cal-b-offset').value) || 0 },
+      });
+    });
   });
 
   // -- tap-to-copy pairing links -----------------------------------------

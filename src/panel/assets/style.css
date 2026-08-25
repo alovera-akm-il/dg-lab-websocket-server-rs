@@ -254,6 +254,10 @@ fieldset.controls:disabled { opacity: 0.42; }
 .limit-row label { font-size: 11.5px; color: var(--faint); font-weight: 600; }
 .limit-row input[type=number] { width: 64px; }
 .limit-current { font-size: 11.5px; color: var(--faint); }
+.logical-value { font-size: 12px; font-weight: 600; color: var(--faint); margin-left: 8px; }
+.calibration-row { margin-top: 6px; padding-top: 2px; }
+.calibration-row label { font-size: 11.5px; color: var(--faint); font-weight: 600; }
+.calibration-row input[type=number] { width: 56px; }
 
 /* -- strength ramps: a programmatic curve the panel drives on a 1s
    tick, in place of individual manual +/-/Set calls -- see
