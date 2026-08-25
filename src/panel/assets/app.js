@@ -514,6 +514,19 @@
     });
   }
 
+  const checkinStatusEl = $('checkin-status');
+
+  function renderLastCheckIn(checkIn) {
+    if (!checkIn) { checkinStatusEl.hidden = true; return; }
+    checkinStatusEl.hidden = false;
+    const time = new Date(checkIn.timestamp).toLocaleTimeString();
+    const discomfort = checkIn.discomfort && checkIn.discomfort !== 'none' ? `, discomfort: ${checkIn.discomfort}` : '';
+    checkinStatusEl.innerHTML =
+      '<span class="checkin-label">Last check-in:</span>' +
+      `<span>${checkIn.color} / arousal ${checkIn.arousal}${discomfort}</span>` +
+      `<span class="checkin-time mono">${time}</span>`;
+  }
+
   // -- button mapping: raw JSON editor, not part of the SSE snapshot
   // (config, not live device state) -- fetched once on load and again
   // after Save/Reload ------------------------------------------------
@@ -671,6 +684,7 @@
     rampA.render(state.rampA);
     rampB.render(state.rampB);
     renderSessionTimer(state.sessionTimer);
+    renderLastCheckIn(state.lastCheckIn);
 
     buttonActionEl.textContent = state.lastButtonAction != null ? state.lastButtonAction : '-';
     $('limit-a-current').textContent = state.limitA != null ? `current: ${state.limitA}` : 'no limit';

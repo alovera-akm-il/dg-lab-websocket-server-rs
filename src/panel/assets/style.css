@@ -513,3 +513,10 @@ textarea { width: 100%; min-height: 64px; font-family: 'JetBrains Mono', ui-mono
 .recipe-empty { color: var(--faint); font-size: 13px; padding: 4px 0; }
 .recipe-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
 .recipe-name { flex: 1; font-weight: 600; }
+.checkin-status {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--border);
+  font-size: 12.5px; color: var(--muted); margin-bottom: 12px;
+}
+.checkin-status .checkin-label { font-weight: 700; color: var(--text); text-transform: none; }
+.checkin-status .checkin-time { margin-left: auto; color: var(--faint); }

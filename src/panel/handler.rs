@@ -27,7 +27,7 @@ use super::event_log::EventLogConfig;
 use super::ramp::{self, RampProfile};
 use super::recipe::{Recipe, RecipePlaylist};
 use super::session::{self, SessionConfig};
-use super::state::{ActiveTarget, PanelState, Snapshot};
+use super::state::{ActiveTarget, CheckIn, PanelState, Snapshot};
 use super::{
     assets, commands, network, playlist, playlist_runner, presets, qrcode, ramp_runner,
     session_runner, templates, v4_client, v4_commands, webhook,
@@ -67,6 +67,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/session/log-config", post(post_session_log_config))
         .route("/api/session/start", post(post_session_start))
         .route("/api/session/stop", post(post_session_stop_all))
+        .route("/api/session/checkin", post(post_session_checkin))
         .route("/api/session/recipes", get(get_recipes))
         .route(
             "/api/session/recipes/{name}",
@@ -237,6 +238,21 @@ fn snapshot_json(
         "rampA": ramp_json(snapshot.ramp_a),
         "rampB": ramp_json(snapshot.ramp_b),
         "sessionTimer": session_timer_json(&snapshot.session_timer),
+        "lastCheckIn": check_in_json(&snapshot.last_check_in),
+    })
+}
+
+/// `null` when no check-in has been logged yet this session.
+fn check_in_json(check_in: &Option<CheckIn>) -> Value {
+    let Some(c) = check_in else {
+        return Value::Null;
+    };
+    json!({
+        "timestamp": c.timestamp,
+        "color": c.color,
+        "arousal": c.arousal,
+        "discomfort": c.discomfort,
+        "notes": c.notes,
     })
 }
 
@@ -741,6 +757,63 @@ async fn post_session_stop_all(State(state): State<AppState>) -> Response {
     state
         .panel
         .log("Emergency stop: cleared both channels, stopped playlists/ramps/timer");
+    StatusCode::OK.into_response()
+}
+
+// ---- check-ins (Feature 7) ------------------------------------------
+
+#[derive(Deserialize)]
+struct CheckInBody {
+    color: String,
+    arousal: i64,
+    #[serde(default)]
+    discomfort: Option<String>,
+    #[serde(default)]
+    notes: Option<String>,
+}
+
+async fn post_session_checkin(
+    State(state): State<AppState>,
+    Json(body): Json<CheckInBody>,
+) -> Response {
+    if !matches!(body.color.as_str(), "green" | "yellow" | "red") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "color must be \"green\", \"yellow\", or \"red\"",
+        );
+    }
+    if !(1..=10).contains(&body.arousal) {
+        return error_response(StatusCode::BAD_REQUEST, "arousal must be an integer 1-10");
+    }
+    let discomfort = body.discomfort.unwrap_or_else(|| "none".to_string());
+    if !matches!(discomfort.as_str(), "none" | "mild" | "moderate" | "severe") {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "discomfort must be \"none\", \"mild\", \"moderate\", or \"severe\"",
+        );
+    }
+
+    let timestamp = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    state.panel.record_check_in(CheckIn {
+        timestamp: timestamp.clone(),
+        color: body.color.clone(),
+        arousal: body.arousal,
+        discomfort: discomfort.clone(),
+        notes: body.notes.clone(),
+    });
+    state.panel.log_with(
+        format!(
+            "Check-in: {} / arousal {} / discomfort {discomfort}",
+            body.color, body.arousal
+        ),
+        json!({
+            "event": "subjective.check_in",
+            "color": body.color,
+            "arousal": body.arousal,
+            "discomfort": discomfort,
+            "notes": body.notes,
+        }),
+    );
     StatusCode::OK.into_response()
 }
 

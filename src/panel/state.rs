@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
 use serde_json::Value;
@@ -101,6 +102,31 @@ pub struct DeviceHealth {
     pub channel_b_overheat_pct: Option<i64>,
 }
 
+/// A subjective check-in logged via `POST /api/session/checkin`
+/// (Feature 7) -- the most recent one is kept for the `/events`
+/// snapshot's `lastCheckIn`; every one is also logged/webhooked via
+/// `PanelState::log_with`, same as any other event.
+#[derive(Debug, Clone)]
+pub struct CheckIn {
+    pub timestamp: String,
+    pub color: String,
+    pub arousal: i64,
+    pub discomfort: String,
+    pub notes: Option<String>,
+}
+
+/// A `normal` <-> issue transition on one channel's electrode contact
+/// status (Feature 8), detected by comparing consecutive V4 health
+/// reports -- see `detect_contact_transition`. `status` is `"entered"`
+/// (just became an issue) or `"resolved"` (issue cleared); `issue` is
+/// `"normal"` for a `"resolved"` transition, or the specific problem
+/// (`contact_issue_str`) for an `"entered"` one.
+pub struct ContactTransition {
+    pub channel: Channel,
+    pub status: &'static str,
+    pub issue: &'static str,
+}
+
 struct Inner {
     // -- V3 leg --
     status: Status,
@@ -148,6 +174,12 @@ struct Inner {
     channel_b_overheat: Option<bool>,
     channel_a_overheat_pct: Option<i64>,
     channel_b_overheat_pct: Option<i64>,
+    /// Debounce timestamps for Feature 8's `contact_issue` alerts -- see
+    /// `detect_contact_transition`. Reset alongside the status fields
+    /// above whenever `clear_health` runs, so a fresh device attachment
+    /// starts with a clean debounce window.
+    contact_alert_at_a: Option<Instant>,
+    contact_alert_at_b: Option<Instant>,
 
     /// Operator-configured safety cap: the panel refuses to send any
     /// Inc/Set command that would push a channel's strength above this.
@@ -200,6 +232,11 @@ struct Inner {
     /// Named session presets -- like templates, survives a process
     /// restart (see [`super::recipe`]/[`super::persistence`]).
     recipes: HashMap<String, Recipe>,
+
+    /// Most recent subjective check-in (Feature 7) -- session-scoped,
+    /// like the log/webhook events it's logged alongside, not persisted
+    /// to disk.
+    last_check_in: Option<CheckIn>,
 }
 
 pub struct Snapshot {
@@ -233,6 +270,7 @@ pub struct Snapshot {
     pub ramp_a: Option<RampSnapshot>,
     pub ramp_b: Option<RampSnapshot>,
     pub session_timer: Option<SessionSnapshot>,
+    pub last_check_in: Option<CheckIn>,
 }
 
 pub struct PanelState {
@@ -293,6 +331,8 @@ impl PanelState {
                 channel_b_overheat: None,
                 channel_a_overheat_pct: None,
                 channel_b_overheat_pct: None,
+                contact_alert_at_a: None,
+                contact_alert_at_b: None,
                 limit_a: None,
                 limit_b: None,
                 webhook_url: None,
@@ -305,6 +345,7 @@ impl PanelState {
                 templates: templates::load_all(),
                 button_map: button_map::load(),
                 recipes: recipe::load_all(),
+                last_check_in: None,
             }),
             changed,
             reconnect: Mutex::new(CancellationToken::new()),
@@ -355,6 +396,7 @@ impl PanelState {
             ramp_a: inner.ramp_a,
             ramp_b: inner.ramp_b,
             session_timer: inner.session.snapshot(),
+            last_check_in: inner.last_check_in.clone(),
         }
     }
 
@@ -556,7 +598,9 @@ impl PanelState {
 
     /// The attached APP reported a device we can control (from
     /// `devices.snapshot`/`devices.patch.added`) -- the panel only ever
-    /// tracks the first device it sees per APP.
+    /// tracks the first device it sees per APP. Returns any Feature 8
+    /// `contact_issue` transitions this health report triggered, for the
+    /// caller (`v4_client.rs`) to log after the lock is released.
     pub fn v4_set_device(
         &self,
         slot_id: String,
@@ -564,7 +608,8 @@ impl PanelState {
         strength_a: Option<i64>,
         strength_b: Option<i64>,
         health: DeviceHealth,
-    ) {
+    ) -> Vec<ContactTransition> {
+        let mut transitions = Vec::new();
         {
             let mut inner = self.inner.lock().unwrap();
             inner.v4_device_slot_id = Some(slot_id);
@@ -578,21 +623,25 @@ impl PanelState {
                 if let Some(b) = strength_b {
                     inner.strength_b = Some(b);
                 }
+                transitions = detect_contact_transitions(&mut inner, &health);
                 apply_health(&mut inner, health);
             }
         }
         self.notify_changed();
+        transitions
     }
 
     /// The tracked device's props changed (`slots.patch`) -- only applied
     /// if V4 is the active leg and the patch is for the device we track.
+    /// Same `ContactTransition` return contract as [`Self::v4_set_device`].
     pub fn v4_update_device(
         &self,
         slot_id: &str,
         strength_a: Option<i64>,
         strength_b: Option<i64>,
         health: DeviceHealth,
-    ) {
+    ) -> Vec<ContactTransition> {
+        let mut transitions = Vec::new();
         {
             let mut inner = self.inner.lock().unwrap();
             if inner.active_protocol == Some(Protocol::V4)
@@ -604,10 +653,12 @@ impl PanelState {
                 if let Some(b) = strength_b {
                     inner.strength_b = Some(b);
                 }
+                transitions = detect_contact_transitions(&mut inner, &health);
                 apply_health(&mut inner, health);
             }
         }
         self.notify_changed();
+        transitions
     }
 
     /// The attached APP (and whatever device it exposed) disconnected
@@ -1185,6 +1236,18 @@ impl PanelState {
         removed
     }
 
+    // ---- check-ins (Feature 7) --------------------------------------------
+
+    /// Records a subjective check-in for `/events`' `lastCheckIn` --
+    /// logging it (webhook + event log) is the caller's job
+    /// (`handler::post_session_checkin`), via the usual `log_with`.
+    pub fn record_check_in(&self, check_in: CheckIn) {
+        {
+            self.inner.lock().unwrap().last_check_in = Some(check_in);
+        }
+        self.notify_changed();
+    }
+
     // ---- event log ------------------------------------------------------
 
     /// Wires up the event-log writer task's channel -- called once by
@@ -1333,6 +1396,94 @@ fn clear_health(inner: &mut Inner) {
     inner.channel_b_overheat = None;
     inner.channel_a_overheat_pct = None;
     inner.channel_b_overheat_pct = None;
+    inner.contact_alert_at_a = None;
+    inner.contact_alert_at_b = None;
+}
+
+/// `channel_a_status`/`channel_b_status`'s documented "normal" code (see
+/// [`DeviceHealth`]'s field docs) -- Feature 8's alerts fire on crossing
+/// to/from this value, not on every status change.
+const CHANNEL_STATUS_NORMAL: i64 = 2;
+
+/// Maps a non-normal `channel_*_status` code to one of Feature 8's four
+/// `issue` values. The original request's `issue` enum
+/// (`"loose"`/`"damaged"`/`"open_circuit"`/`"unknown"`) doesn't have a
+/// one-to-one match for all five documented status codes -- this is a
+/// judgment call, not something Mara's clarification round covered:
+/// `0` ("no output") is mapped to `"loose"` as the closest fit (no
+/// signal path, e.g. a detached pad), and `4` ("masked", Coyote-only)
+/// falls back to `"unknown"` alongside any undocumented code, same as
+/// `v4_client::channel_status_label`'s own catch-all.
+fn contact_issue_str(code: i64) -> &'static str {
+    match code {
+        0 => "loose",
+        1 => "open_circuit",
+        3 => "damaged",
+        _ => "unknown",
+    }
+}
+
+/// Minimum time between `contact_issue` alerts on the same channel, per
+/// Feature 8's clarification -- a flapping status still updates
+/// `channel_*_status` every tick, but only alerts at most once per
+/// window.
+const CONTACT_ALERT_DEBOUNCE: Duration = Duration::from_millis(500);
+
+/// Checks one channel's health report against its previous status for a
+/// `normal` <-> issue transition, honoring the debounce window. Must run
+/// *before* `apply_health` overwrites `channel_*_status`, since it needs
+/// both the old and new value.
+fn detect_contact_transition(
+    previous: Option<i64>,
+    new_status: Option<i64>,
+    last_alert_at: &mut Option<Instant>,
+    channel: Channel,
+) -> Option<ContactTransition> {
+    let new_code = new_status?;
+    let was_issue = previous.is_some_and(|c| c != CHANNEL_STATUS_NORMAL);
+    let is_issue = new_code != CHANNEL_STATUS_NORMAL;
+    if was_issue == is_issue {
+        return None;
+    }
+    let now = Instant::now();
+    if let Some(at) = last_alert_at
+        && now.duration_since(*at) < CONTACT_ALERT_DEBOUNCE
+    {
+        return None;
+    }
+    *last_alert_at = Some(now);
+    Some(ContactTransition {
+        channel,
+        status: if is_issue { "entered" } else { "resolved" },
+        issue: if is_issue {
+            contact_issue_str(new_code)
+        } else {
+            "normal"
+        },
+    })
+}
+
+/// Runs [`detect_contact_transition`] for both channels against this
+/// tick's health report.
+fn detect_contact_transitions(inner: &mut Inner, health: &DeviceHealth) -> Vec<ContactTransition> {
+    let mut transitions = Vec::new();
+    if let Some(t) = detect_contact_transition(
+        inner.channel_a_status,
+        health.channel_a_status,
+        &mut inner.contact_alert_at_a,
+        Channel::A,
+    ) {
+        transitions.push(t);
+    }
+    if let Some(t) = detect_contact_transition(
+        inner.channel_b_status,
+        health.channel_b_status,
+        &mut inner.contact_alert_at_b,
+        Channel::B,
+    ) {
+        transitions.push(t);
+    }
+    transitions
 }
 
 /// Overwrites only the fields `health` actually carries a value for,
@@ -1657,5 +1808,136 @@ mod tests {
         // A stray V3 report arrives while V4 is active -- ignored.
         state.set_device_strength(99, 99, 50, 50);
         assert_eq!(state.snapshot().strength_a, Some(1));
+    }
+
+    #[test]
+    fn record_check_in_populates_the_snapshot() {
+        let state = PanelState::new();
+        assert!(state.snapshot().last_check_in.is_none());
+
+        state.record_check_in(CheckIn {
+            timestamp: "2026-08-24T00:00:00.000Z".into(),
+            color: "green".into(),
+            arousal: 6,
+            discomfort: "none".into(),
+            notes: Some("feeling good".into()),
+        });
+        let snap = state.snapshot();
+        let check_in = snap.last_check_in.expect("check-in should be recorded");
+        assert_eq!(check_in.color, "green");
+        assert_eq!(check_in.arousal, 6);
+        assert_eq!(check_in.notes.as_deref(), Some("feeling good"));
+    }
+
+    #[test]
+    fn contact_issue_str_maps_documented_codes() {
+        assert_eq!(contact_issue_str(0), "loose");
+        assert_eq!(contact_issue_str(1), "open_circuit");
+        assert_eq!(contact_issue_str(3), "damaged");
+        assert_eq!(contact_issue_str(4), "unknown");
+        assert_eq!(contact_issue_str(99), "unknown");
+    }
+
+    #[test]
+    fn detect_contact_transition_fires_on_entering_and_ignores_no_report() {
+        let mut last_alert = None;
+        // First-ever report, already normal -- no transition.
+        assert!(
+            detect_contact_transition(
+                None,
+                Some(CHANNEL_STATUS_NORMAL),
+                &mut last_alert,
+                Channel::A
+            )
+            .is_none()
+        );
+        assert!(last_alert.is_none());
+
+        // normal -> open circuit: entering.
+        let t = detect_contact_transition(
+            Some(CHANNEL_STATUS_NORMAL),
+            Some(1),
+            &mut last_alert,
+            Channel::A,
+        )
+        .expect("should fire");
+        assert_eq!(t.status, "entered");
+        assert_eq!(t.issue, "open_circuit");
+        assert!(last_alert.is_some());
+
+        // No fresh report this tick -- no transition, regardless of prior state.
+        assert!(detect_contact_transition(Some(1), None, &mut None, Channel::A).is_none());
+    }
+
+    #[test]
+    fn detect_contact_transition_debounces_rapid_flapping_but_allows_after_the_window() {
+        let mut last_alert = None;
+        let entered = detect_contact_transition(
+            Some(CHANNEL_STATUS_NORMAL),
+            Some(1),
+            &mut last_alert,
+            Channel::A,
+        )
+        .expect("first transition should fire");
+        assert_eq!(entered.status, "entered");
+
+        // Immediately flapping back to normal -- within the debounce window, suppressed.
+        assert!(
+            detect_contact_transition(
+                Some(1),
+                Some(CHANNEL_STATUS_NORMAL),
+                &mut last_alert,
+                Channel::A
+            )
+            .is_none()
+        );
+
+        // Simulate the debounce window having already elapsed.
+        last_alert = Some(Instant::now() - CONTACT_ALERT_DEBOUNCE - Duration::from_millis(10));
+        let resolved = detect_contact_transition(
+            Some(1),
+            Some(CHANNEL_STATUS_NORMAL),
+            &mut last_alert,
+            Channel::A,
+        )
+        .expect("should fire once the debounce window passes");
+        assert_eq!(resolved.status, "resolved");
+        assert_eq!(resolved.issue, "normal");
+    }
+
+    #[test]
+    fn v4_update_device_surfaces_a_contact_transition_end_to_end() {
+        let state = PanelState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        state.v4_set_connected("c4".into(), tx);
+        state.v4_set_app_attached("app4".into());
+        let transitions = state.v4_set_device(
+            "slot4".into(),
+            "Coyote".into(),
+            Some(10),
+            Some(10),
+            DeviceHealth {
+                channel_a_status: Some(CHANNEL_STATUS_NORMAL),
+                ..Default::default()
+            },
+        );
+        assert!(
+            transitions.is_empty(),
+            "starting out normal shouldn't alert"
+        );
+
+        let transitions = state.v4_update_device(
+            "slot4",
+            None,
+            None,
+            DeviceHealth {
+                channel_a_status: Some(1),
+                ..Default::default()
+            },
+        );
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].channel, Channel::A);
+        assert_eq!(transitions[0].status, "entered");
+        assert_eq!(transitions[0].issue, "open_circuit");
     }
 }

@@ -17,8 +17,9 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 use crate::logging::{LogLevel, log_panel};
 
 use super::button_map;
+use super::commands;
 use super::relay_client::decode_button_feedback;
-use super::state::{DeviceHealth, PanelState, Protocol};
+use super::state::{ContactTransition, DeviceHealth, PanelState, Protocol};
 
 pub async fn run(v4_port: u16, prefix: String, state: Arc<PanelState>) {
     loop {
@@ -204,7 +205,11 @@ fn handle_app_event(state: &Arc<PanelState>, data: &Value) {
                     };
                     let (strength_a, strength_b) = extract_intensities(slot.get("props"));
                     let health = extract_health(slot.get("props"), slot.get("slotState"));
-                    state.v4_update_device(slot_id, strength_a, strength_b, health);
+                    let transitions =
+                        state.v4_update_device(slot_id, strength_a, strength_b, health);
+                    for t in transitions {
+                        log_contact_transition(state, t);
+                    }
                 }
             }
         }
@@ -240,7 +245,25 @@ fn apply_device(state: &Arc<PanelState>, device: &Value) {
         format!("V4 device available: {name} ({slot_id})"),
         json!({"event": "device_status", "protocol": "v4", "slotId": slot_id, "name": name}),
     );
-    state.v4_set_device(slot_id.to_string(), name, strength_a, strength_b, health);
+    let transitions =
+        state.v4_set_device(slot_id.to_string(), name, strength_a, strength_b, health);
+    for t in transitions {
+        log_contact_transition(state, t);
+    }
+}
+
+/// Logs a Feature 8 electrode-contact-quality transition through the
+/// usual `log_with` pipeline (webhook + event log), same as every other
+/// panel event.
+fn log_contact_transition(state: &Arc<PanelState>, t: ContactTransition) {
+    let channel = commands::channel_str(t.channel);
+    state.log_with(
+        format!(
+            "Electrode contact {} on channel {channel}: {}",
+            t.status, t.issue
+        ),
+        json!({"event": "contact_issue", "channel": channel, "status": t.status, "issue": t.issue}),
+    );
 }
 
 /// Reads `props.intensityA`/`props.intensityB` -- the documented Coyote
