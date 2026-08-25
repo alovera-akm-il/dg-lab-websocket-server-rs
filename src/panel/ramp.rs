@@ -198,8 +198,15 @@ impl RunnerTick {
     /// `RampProfile::peak_value`'s docs on why the other two profiles
     /// are checked upfront instead). `None` once the profile's total
     /// duration has elapsed -- the runner should stop.
+    ///
+    /// Deliberately `>`, not `>=`: `elapsed_secs == total_seconds` is
+    /// still a real tick that must run -- for `Linear` it's the one that
+    /// actually reaches `to` (`value_at(total_seconds)` resolves exactly
+    /// to `to`). Using `>=` here ends the ramp one tick early, so it
+    /// only ever reaches `value_at(total_seconds - 1)` and the
+    /// configured target is never actually sent.
     pub fn step(&mut self, profile: RampProfile, limit: Option<i64>) -> Option<i64> {
-        if self.elapsed_secs >= profile.total_seconds() {
+        if self.elapsed_secs > profile.total_seconds() {
             return None;
         }
         let value = match profile {
@@ -416,14 +423,40 @@ mod tests {
     }
 
     #[test]
-    fn step_returns_none_once_the_total_duration_elapses() {
+    fn step_returns_none_only_once_the_total_duration_is_exceeded() {
         let p = RampProfile::Hold {
             value: 25,
             duration_seconds: 2,
         };
         let mut tick = RunnerTick::new(p);
         assert!(tick.step(p, None).is_some());
+        // The tick AT elapsed == duration_seconds is still a real tick --
+        // see `step`'s doc comment on why this boundary is `>`, not `>=`.
         tick.elapsed_secs = 2;
+        assert!(tick.step(p, None).is_some());
+        tick.elapsed_secs = 3;
         assert!(tick.step(p, None).is_none());
+    }
+
+    #[test]
+    fn linear_ramp_actually_reaches_the_target_not_one_tick_short() {
+        let p = RampProfile::Linear {
+            from: 0,
+            to: 10,
+            over_seconds: 5,
+        };
+        let mut tick = RunnerTick::new(p);
+        tick.elapsed_secs = 5;
+        assert_eq!(
+            tick.step(p, None),
+            Some(10),
+            "the final tick must land exactly on `to`, not stop one short at value_at(4)"
+        );
+        tick.elapsed_secs = 6;
+        assert_eq!(
+            tick.step(p, None),
+            None,
+            "the ramp ends the tick *after* reaching the target"
+        );
     }
 }

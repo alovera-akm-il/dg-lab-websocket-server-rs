@@ -166,7 +166,8 @@ async fn linear_ramp_sends_increasing_add_intensity_deltas_toward_the_target() {
     // rather than waiting a full second first.
     let frame = recv_until(&mut app, |v| v["data"]["data"]["t"] == 3).await;
     assert_eq!(frame["data"]["data"]["c"], 0); // channel A
-    assert_eq!(frame["data"]["data"]["v"], 0);
+    let mut cumulative = frame["data"]["data"]["v"].as_i64().unwrap();
+    assert_eq!(cumulative, 0);
 
     // Channel A's snapshot should now show an active linear ramp.
     let snap = panel_state.snapshot();
@@ -174,13 +175,22 @@ async fn linear_ramp_sends_increasing_add_intensity_deltas_toward_the_target() {
     assert_eq!(ramp_a.profile.as_str(), "linear");
     assert_eq!(ramp_a.target, Some(4));
 
-    // One second later, the runner's next tick should command a higher
-    // value (interpolating toward 4) -- another positive delta.
+    // t=1 -> interpolating toward 4.
     let frame = recv_until(&mut app, |v| v["data"]["data"]["t"] == 3).await;
-    let delta = frame["data"]["data"]["v"].as_i64().unwrap();
-    assert!(
-        delta > 0,
-        "the second tick should ramp further up, got delta {delta}"
+    cumulative += frame["data"]["data"]["v"].as_i64().unwrap();
+    assert_eq!(cumulative, 2);
+
+    // t=2 -- the tick *at* overSeconds -- must land exactly on the
+    // configured target (4), not stop one short at value_at(1)=2. This
+    // is the regression case for a real off-by-one: the runner used to
+    // end the ramp the instant elapsed_secs reached overSeconds, so
+    // this final tick never ran and the ramp never actually reached
+    // its target.
+    let frame = recv_until(&mut app, |v| v["data"]["data"]["t"] == 3).await;
+    cumulative += frame["data"]["data"]["v"].as_i64().unwrap();
+    assert_eq!(
+        cumulative, 4,
+        "the ramp must actually reach its configured target"
     );
 
     http.post(format!("{panel_base}/api/ramp/stop"))
