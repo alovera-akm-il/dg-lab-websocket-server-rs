@@ -411,6 +411,10 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/limit` | Set/clear a channel's operator upper limit |
 | `POST` | `/api/ramp` | Start (or replace) a strength ramp on a channel |
 | `POST` | `/api/ramp/stop` | Stop a channel's active ramp |
+| `POST` | `/api/session/timer` | Configure and start the session timer |
+| `POST` | `/api/session/timer/pause` | Pause the session timer |
+| `POST` | `/api/session/timer/play` | Resume the session timer |
+| `POST` | `/api/session/end` | End the session timer early |
 | `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
 | `POST` | `/api/reconnect` | Force a fresh relay connection (new controller id/QR) |
 | `POST` | `/api/playlist/{channel}/items` | Add a pulse or gap entry to that channel's playlist |
@@ -466,7 +470,8 @@ every time anything changes. Each event's `data` is:
   "playlistA": <PlaylistSnapshot, see below>,
   "playlistB": <PlaylistSnapshot, see below>,
   "rampA": <ramp object, see "Ramps" below> | null,
-  "rampB": <ramp object, see "Ramps" below> | null
+  "rampB": <ramp object, see "Ramps" below> | null,
+  "sessionTimer": <session timer object, see "Session timer" below> | null
 }
 ```
 
@@ -675,6 +680,98 @@ redraw its config without having cached the original `POST /api/ramp`
 body — same "merge whatever's relevant for this event" shape
 [webhook payloads](#webhook-payloads) already use, rather than a fixed set
 of always-present-but-often-null fields.
+
+### Session timer
+
+A single, panel-wide countdown timer (not per-channel, unlike playlists
+and ramps — there's only ever one) that fires a webhook/log event at
+configurable checkpoints — `src/panel/session.rs`/
+`src/panel/session_runner.rs`. Every checkpoint (recurring check-ins, one-off
+labeled phase gates, a fixed 5-minute-before-the-end warning, and the final
+end) is known in full the instant the timer starts, so the whole run is
+flattened into one sorted schedule up front and the runner sleeps exactly to
+each one in turn — the same "sleep the exact needed duration" discipline
+`playlist_runner`/`ramp_runner` already use, rather than polling every
+second. Session config is session-scoped like playlists/ramps — it doesn't
+survive a panel restart.
+
+#### `POST /api/session/timer`
+
+```json
+{
+  "durationSeconds": 3600,
+  "checkInEverySeconds": 900,
+  "phaseGates": [
+    {"atSeconds": 300, "label": "warmup-complete"},
+    {"atSeconds": 1200, "label": "midpoint"}
+  ],
+  "autoStopPlaylistsAtEnd": true
+}
+```
+
+Starts a fresh timer, replacing any existing one outright (same "starting a
+new one always wins" rule as `POST /api/ramp`). `checkInEverySeconds: 0` (or
+omitted) disables recurring check-ins — a session with only phase gates and
+no periodic check-in is a legitimate configuration. `phaseGates` may be
+empty/omitted. `400` if `durationSeconds` is `0`, or any gate's `label` is
+empty or `atSeconds` is at or past `durationSeconds`.
+
+Fires `session.started` immediately on success (`elapsedSeconds: 0`,
+`remainingSeconds: durationSeconds`, `label: null`), then one event per
+checkpoint as the timer runs:
+
+| Event | Fires |
+| --- | --- |
+| `session.check_in` | Every `checkInEverySeconds`, if nonzero |
+| `session.phase_gate` | At each configured gate's `atSeconds` (`label` carries the gate's own label) |
+| `session.ending` | 5 minutes before the end — only scheduled if `durationSeconds > 300` |
+| `session.ended` | At the end (natural or early — see `POST /api/session/end`) |
+
+Every event's payload is `{"event": "...", "elapsedSeconds": <number>,
+"remainingSeconds": <number>, "label": "<string>" | null}`, delivered
+through the same webhook/log path every other panel event already uses.
+
+#### `POST /api/session/timer/pause` / `POST /api/session/timer/play`
+
+No body. `pause` captures elapsed time and stops the runner; `play` resumes
+counting from exactly where it left off (the schedule itself never changes
+— a phase gate's `atSeconds` is fixed from when the timer started, so
+resuming just continues walking the same precomputed list). Both always
+`200 OK`, including when there's nothing to pause/resume.
+
+#### `POST /api/session/end`
+
+No body. Ends the session early: fires `session.ended` with the actual
+elapsed/remaining at the moment of stopping (not `0` remaining, unlike a
+natural end), and honors `autoStopPlaylistsAtEnd` the same way a natural
+end does. Always `200 OK`, including when nothing was running.
+
+#### `sessionTimer` in `/events`
+
+`null` when no session is active:
+
+```json
+{
+  "state": "running" | "paused",
+  "elapsed": 845,
+  "remaining": 2755,
+  "durationSeconds": 3600,
+  "checkInEverySeconds": 900,
+  "nextGateLabel": "midpoint",
+  "nextGateAt": 1200,
+  "phaseGates": [
+    {"atSeconds": 300, "label": "warmup-complete"},
+    {"atSeconds": 1200, "label": "midpoint"}
+  ],
+  "autoStopPlaylistsAtEnd": true
+}
+```
+
+`phaseGates` always carries *every* configured gate (not just the next
+one) so the UI can draw the full checkpoint strip; `nextGateLabel`/
+`nextGateAt` (both `null` once every gate has passed) tell it which one to
+highlight as next. `state` is never `"stopped"` here — a stopped session is
+simply `sessionTimer: null`, same as an inactive ramp.
 
 ### `POST /api/webhook`
 

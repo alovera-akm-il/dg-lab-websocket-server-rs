@@ -250,6 +250,15 @@ readout and a Cancel button, replacing the picker.
 
 ## 3. Session Timer with Check-in Gates
 
+**Status: implemented.** `src/panel/session.rs` + `src/panel/session_runner.rs`;
+the design below (a precomputed sorted schedule the runner sleeps exactly
+to, rather than a 1-second poll; pause/resume via captured elapsed time,
+no schedule recomputation) matches what shipped — see `docs/api.md`'s
+"Session timer" section for the final endpoint/SSE reference. Unit tests
+covering the schedule builder and pause/resume are in place and passing;
+integration-level (real timer ticks over HTTP) and live-UI verification
+have not been run yet.
+
 Built-in session timer that fires webhook/SSE events at configurable checkpoints.
 
 ### API
