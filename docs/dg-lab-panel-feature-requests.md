@@ -763,7 +763,44 @@ Safety-critical. Tonight's pad displacement was reported late. The panel already
 
 ## 9. Per-Channel Intensity Calibration
 
-**Status:** Proposed.
+**Status: implemented**, per Mara's answers below, with one correction
+made along the way. `src/panel/calibration.rs` holds the data model
+(`raw = (logical + offset) * gain`, gain in `[0.1, 5.0]`, offset in
+`[-50, 50]`) and persistence (`calibration.json` under `PANEL_DATA_DIR`).
+`handler.rs::post_strength`, `handler.rs::post_ramp`'s peak-value check,
+`ramp_runner.rs::send_set`, and `button_map.rs`'s `strength_set` action
+all calibrate their logical target before sending — `op: "inc"/"dec"`
+and `strength_inc`/`_dec`/`_delta` deliberately don't (relative nudges to
+raw current strength, no logical target to convert). `/events` gained
+`logicalStrengthA`/`_B` and `calibration`; the Strength card shows both
+values per channel, plus a small gain/offset form.
+
+**Correction to answer #6** ("reject any combination that would produce
+a negative wire value or a value > 200"): implementing this literally as
+a *save-time* check against the full 0-200 logical domain would reject
+Mara's own example calibration (`gain: 2.0`) — `200 * 2.0 = 400` already
+overflows past 200, even though the same calibration is exactly what her
+"ramp both to 40" example needs and is perfectly safe there. Implemented
+instead as a *per-command* check against the actual value being sent
+(`calibration::apply_checked`), at every call site listed above — this
+satisfies the same underlying safety goal (the device never receives a
+negative value or one above 200) without rejecting calibrations that are
+only unsafe for logical inputs nobody's actually sending. Flagged here
+rather than silently reinterpreted, since it changes what "reject" means
+relative to the literal answer.
+
+See `docs/api.md`'s "Per-channel intensity calibration" section for the
+final reference. Unit tests cover `calibration.rs`'s own logic
+(order-of-operations, the inverse for display, the save-time vs.
+per-command validation split) and `PanelState`'s calibration accessors;
+matching the rest of this codebase, `handler.rs`/`button_map.rs` have no
+direct unit tests of their own (see e.g. Features 7/8's notes), so the
+four call sites that apply calibration when sending a command
+(`post_strength`, `post_ramp`'s peak check, `ramp_runner::send_set`,
+`button_map`'s `strength_set` action) are exercised only by inspection
+and by the shared `calibration::apply_checked` they all call, not by a
+dedicated integration test per call site. Integration-level/live-UI
+verification have not been run yet either.
 
 **API:**
 

@@ -409,6 +409,8 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/clear` | Clear a channel (cancels any in-flight pulse) |
 | `POST` | `/api/pulse` | Send a pulse waveform |
 | `POST` | `/api/limit` | Set/clear a channel's operator upper limit |
+| `GET` | `/api/calibration` | Read the current per-channel intensity calibration |
+| `POST` | `/api/calibration` | Set the per-channel intensity calibration |
 | `POST` | `/api/ramp` | Start (or replace) a strength ramp on a channel |
 | `POST` | `/api/ramp/stop` | Stop a channel's active ramp |
 | `POST` | `/api/session/timer` | Configure and start the session timer |
@@ -609,6 +611,72 @@ only ever visible read-only, as `softLimitA`/`softLimitB` in `/events`.
 `value: null` (or omitted) clears the limit. `400` if `value` is negative.
 Survives the panel's own relay reconnects (it's operator configuration, not
 device state).
+
+### Per-channel intensity calibration
+
+A per-channel gain/offset the panel applies whenever it sends an
+*absolute* strength target, so two zones with different sensitivity
+(e.g. "perineum at 25 feels like inner thigh at 50") can both be driven
+by the same logical numbers in ramps/recipes -- `src/panel/calibration.rs`.
+Persisted like templates/recipes (`calibration.json` under
+`PANEL_DATA_DIR`), since it's a hardware-zone characteristic, not
+session state.
+
+#### `GET /api/calibration` / `POST /api/calibration`
+
+`GET` returns the current config; `POST` replaces it wholesale (not a
+partial patch — matches `POST /api/button-map`'s shape). `GET` isn't in
+the original request's own API table (only `POST` is) — added for
+symmetry with every other config-like store, and because the panel UI
+needs to read current values back into its calibration form.
+
+```json
+{"channelA": {"gain": 1.0, "offset": 0}, "channelB": {"gain": 2.0, "offset": 5}}
+```
+
+`gain` defaults to `1.0` and `offset` to `0` if either is omitted for a
+channel (a no-op calibration). `400` if `gain` isn't in `[0.1, 5.0]` or
+`offset` isn't in `[-50, 50]`.
+
+**Order of operations:** `raw = (logical + offset) * gain` -- offset
+applies first, then gain, rounded to the nearest integer wire value.
+
+**Only applies to absolute-target operations** -- `POST /api/strength`'s
+`op: "set"`, a ramp's per-tick target (`src/panel/ramp_runner.rs`), and
+`button_map`'s `strength_set` action all convert their logical target
+into a raw wire value this way before sending. `op: "inc"/"dec"` and
+`button_map`'s `strength_inc`/`_dec`/`_delta` are relative nudges to the
+*raw* current strength and are **not** calibrated — there's no logical
+target to convert in the first place (native Inc/Dec frames only support
+a wire-level ±1), and calibrating `amount` itself would require deciding
+whether it's meant as a logical or raw quantity, which isn't specified.
+
+**The configured [upper limit](#post-apilimit) is a hard ceiling on
+physical output**, so every one of those call sites checks it against
+the raw, post-calibration value — same check as before calibration
+existed, since the limit always compared against raw values; only what
+counts as "the value" changed.
+
+**Every command is also checked individually against the device's own
+0-200 range** — a request that would calibrate to a negative value or
+one above 200 is rejected (`400` for `POST /api/strength`/`POST
+/api/ramp`; logged and skipped for the ramp runner and button-map
+actions, which have no HTTP response to carry an error back on).
+This is **not** enforced at `POST /api/calibration` save time against
+the full 0-200 domain: a `gain` far from `1.0` (e.g. the `2.0` example
+above) is only unsafe for *some* logical inputs, not all — rejecting the
+whole config at save time would reject calibrations that are perfectly
+safe for the values actually used day to day.
+
+#### Display
+
+`/events` reports both values: `strengthA`/`strengthB` (the device's
+actual raw reported strength, unchanged) and the new
+`logicalStrengthA`/`logicalStrengthB` (that raw value converted back
+through the inverse of the calibration above, for recipe-authoring
+convenience). The current calibration itself is also included as
+`calibration`, in the same shape `GET /api/calibration` returns. The
+panel UI labels both explicitly, e.g. **A: 80 (logical: 40)**.
 
 ### Ramps
 
