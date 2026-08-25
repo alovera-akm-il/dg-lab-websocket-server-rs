@@ -349,6 +349,15 @@ highlighted with its label and ETA), and Pause/Resume/End controls.
 
 ## 4. File-Based Event Log
 
+**Status: implemented.** `src/panel/event_log.rs`; hooks into
+`PanelState::log_with` as the single third sink, exactly as planned
+below, with its own background writer task communicated with over an
+`mpsc` channel. See `docs/api.md`'s "File-based event log" section for
+the final endpoint/format reference. Unit tests (filename templating,
+line format, directory creation + write round-trip via a real tokio
+temp-dir test) are in place and passing; live end-to-end verification
+against a running panel has not been run yet.
+
 Every webhook event also gets appended to a local JSONL file on disk.
 
 ### Config API
@@ -442,6 +451,18 @@ mockup, but cheap to add if you want it.
 ---
 
 ## 5. Configurable Button Mapping
+
+**Status: implemented, `pattern` only** (per this section's own
+Implementation notes below — `shortPress`/`doublePress`/`longPress`
+were not built, since neither protocol reports press duration or click
+count on the wire). `src/panel/button_map.rs`; dispatched from
+`relay_client.rs`/`v4_client.rs` right after button-feedback decoding,
+persisted like templates. See `docs/api.md`'s "Button mapping" section
+for the final action list/reference. Unit tests (the full request
+shape round-tripping through JSON, per-target channel resolution) are
+in place and passing; live end-to-end verification (an actual button
+press dispatching an action against a running panel) has not been run
+yet.
 
 Server-side actions assigned to physical button presses on the DG-LAB device.
 

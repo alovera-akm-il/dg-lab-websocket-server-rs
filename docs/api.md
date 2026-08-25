@@ -415,6 +415,10 @@ authentication — the panel is intended for trusted-network / localhost use.
 | `POST` | `/api/session/timer/pause` | Pause the session timer |
 | `POST` | `/api/session/timer/play` | Resume the session timer |
 | `POST` | `/api/session/end` | End the session timer early |
+| `POST` | `/api/session/log-config` | Configure the file-based event log |
+| `POST` | `/api/session/start` | Force a fresh event-log session file |
+| `GET` | `/api/button-map` | Read the current button mapping |
+| `POST` | `/api/button-map` | Replace the whole button mapping |
 | `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
 | `POST` | `/api/reconnect` | Force a fresh relay connection (new controller id/QR) |
 | `POST` | `/api/playlist/{channel}/items` | Add a pulse or gap entry to that channel's playlist |
@@ -772,6 +776,140 @@ one) so the UI can draw the full checkpoint strip; `nextGateLabel`/
 `nextGateAt` (both `null` once every gate has passed) tell it which one to
 highlight as next. `state` is never `"stopped"` here — a stopped session is
 simply `sessionTimer: null`, same as an inactive ramp.
+
+### File-based event log
+
+Appends every event `PanelState::log_with` sees — the same superset the
+webhook fires for — to a local JSONL file, one JSON object per line
+(`src/panel/event_log.rs`). Runs as an independent background task with its
+own file handle and rotation state; there's no GET/status endpoint (matches
+this feature's own scope: config-only, driven from the Python client, no
+panel UI).
+
+**"Session" here means a recording session (one physical file), not the
+[session timer](#session-timer) above** — the two share the word by
+coincidence in the original request, not by design, and don't interact.
+
+#### `POST /api/session/log-config`
+
+```json
+{
+  "enabled": true,
+  "directory": "/home/user/dg-lab-logs",
+  "filenameFormat": "dg-lab-{YYYY-MM-DD}_{HH-mm-ss}.jsonl",
+  "maxFileSizeMb": 50,
+  "retentionDays": 30
+}
+```
+
+All five fields are required. `{YYYY-MM-DD}`/`{HH-mm-ss}` in
+`filenameFormat` are substituted against the moment a file is opened (any
+other text, including no placeholder at all, passes through unchanged —
+naming every session the same file is a legal, if unusual, choice).
+`maxFileSizeMb: 0` disables size-based rotation (a session's file just
+keeps growing); `retentionDays: 0` disables the retention sweep entirely
+(nothing is ever auto-deleted). `400` if `directory` or `filenameFormat` is
+empty. Setting `enabled: false` stops writing and closes whatever file is
+currently open; the next session (auto or explicit) after re-enabling opens
+a fresh one.
+
+#### `POST /api/session/start`
+
+No body. Forces a fresh log file — whether or not one is already open —
+and sweeps retention. A session's file also opens automatically the first
+time *any* event is logged while enabled with no file currently open,
+deliberately more general than the original request's literal
+"auto-started at first playlist play" (which would miss any
+pairing/strength/etc. activity that happens before the first playlist
+starts). There's no explicit "end session" endpoint — a session's file
+keeps being appended to (rolling to a fresh one only on
+`maxFileSizeMb`) until the next explicit `POST /api/session/start`, or
+the process restarts.
+
+#### File format
+
+One JSON object per line, the exact same shape [webhook payloads](#webhook-payloads)
+already use — `{message, timestamp, ...extra}` — so anything the webhook
+would have received, the file also has a line for:
+
+```json
+{"message":"Session check-in","timestamp":"2026-08-23T23:01:00.000Z","event":"session.check_in","elapsedSeconds":900,"remainingSeconds":2700,"label":null}
+```
+
+Retention is checked by filesystem modified time on any `.jsonl` file in
+the configured directory, not by parsing `filenameFormat` back into a date
+— a hand-picked format can't always be parsed unambiguously, and mtime is
+simpler and always correct.
+
+### Button mapping
+
+Assigns a server-side action to a physical button-shape press (`"A-circle"`,
+`"B-hexagon"`, …), dispatched the instant `relay_client.rs`/`v4_client.rs`
+decode one (`src/panel/button_map.rs`). Persisted like templates — survives
+a panel restart (`button-map.json` under `PANEL_DATA_DIR`).
+
+**Scope: `pattern` (per-button) mapping only** — the original request also
+proposed `shortPress`/`doublePress`/`longPress`, but neither protocol
+reports press duration or click count anywhere on the wire (see
+["Device feedback"](#device-feedback-device--controller): one message per
+physical tap, full stop) — there's nothing to detect them from, and the
+request doesn't specify which of the 10 button codes a "double press"
+would even apply to. `pattern` alone already covers the request's own
+primary use case ("tap to pause A's playlist without reaching for the
+phone").
+
+#### `GET /api/button-map` / `POST /api/button-map`
+
+`GET` returns the current mapping; `POST` replaces it wholesale (not a
+partial patch):
+
+```json
+{
+  "pattern": {
+    "A-circle": {"action": "playlist_toggle", "target": "A"},
+    "A-triangle": {"action": "strength_inc", "channel": "A", "amount": 1},
+    "A-square": {"action": "strength_dec", "channel": "A", "amount": 1},
+    "B-circle": {"action": "playlist_toggle", "target": "B"},
+    "B-hexagon": {"action": "ramp_cancel", "channel": "both"}
+  }
+}
+```
+
+Keys are `"{channel}-{shape}"`; see the [button-shape table](#device-feedback-device--controller)
+for the 10 valid combinations (`A`/`B` × `circle`/`triangle`/`square`/`star`/`hexagon`).
+An unmapped key is a silent no-op — the `button_feedback` webhook/log event
+still fires as always, just nothing additional happens.
+
+`target`/`channel` accept `"A"`, `"B"`, or `"both"` **on every action**,
+not just the ones the original request's own examples show it on
+(`strength_delta`/`ramp_cancel`) — there's no reason `playlist_play` or
+`strength_set` couldn't apply to both channels at once too, so it isn't
+modeled as two different target types.
+
+| `action` | Fields | Behavior |
+| --- | --- | --- |
+| `playlist_play` | `target` | Starts/resumes that channel's playlist |
+| `playlist_pause` | `target` | Pauses it |
+| `playlist_stop` | `target` | Stops and resets it |
+| `playlist_toggle` | `target` | Pauses if playing, otherwise plays |
+| `strength_inc` | `channel`, `amount` | Adds `amount` to current strength |
+| `strength_dec` | `channel`, `amount` | Subtracts `amount` |
+| `strength_set` | `channel`, `value` | Sets to exactly `value` |
+| `strength_delta` | `channel`, `delta` | Adds a signed `delta` (same operation as `strength_inc`/`_dec`, kept as a separate action for fidelity to the request's own table) |
+| `emergency_clear` | — | Clears both channels, stops both playlists, cancels both ramps |
+| `ramp_cancel` | `channel` | Cancels that channel's active ramp |
+| `webhook_only` | — | Explicitly inert — the button-press event already fires regardless |
+| `none` | — | Same as `webhook_only`; both exist for fidelity to the request |
+
+`strength_inc`/`_dec`/`_delta`/`_set` all resolve to a `Set` command built
+the exact same way `POST /api/strength`'s `op: "set"` is (respecting the
+configured [upper limit](#upper-limit-1); on V4, rejected — silently
+logged, not surfaced anywhere else, since a button press has no HTTP
+response to carry an error back on — if no baseline strength is known
+yet). `strength_inc`/`_dec`/`_delta` additionally need a known *current*
+strength to compute their target from, since there's nothing wire-level
+these can fall back to the way a raw Inc/Dec click can; skipped (logged) if
+unknown.
 
 ### `POST /api/webhook`
 
