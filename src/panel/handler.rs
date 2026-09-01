@@ -834,6 +834,57 @@ async fn post_session_stop_all(State(state): State<AppState>) -> Response {
     StatusCode::OK.into_response()
 }
 
+/// Builds a Set-to-`target_value` strength frame, treating an unknown V4
+/// baseline as `0` rather than refusing to act. V4's wire protocol has no
+/// absolute-set primitive -- only a relative delta from the last known
+/// strength (see `v4_commands::strength_frame`) -- so a lost/never-known
+/// baseline normally means the delta can't be computed at all. `POST
+/// /api/strength`'s own "set" correctly refuses to guess there, since
+/// silently picking a strength for a live manual operator command would
+/// be unsafe. But this helper is only used by the pause/resume/check-in-
+/// pulse paths below, where "assume the channel is at 0 if we've lost
+/// track of it" *is* the documented safety invariant those features
+/// already guarantee (Feature 10's pause always drives strength to 0) --
+/// so assuming 0 here is applying known domain state, not guessing.
+/// Returns the frame plus whether the fallback actually had to be used,
+/// so the caller can log a warning when the bookkeeping was stale (a
+/// real gap worth surfacing, even though it's now safe to proceed
+/// through).
+fn strength_set_frame_assuming_zero(
+    target: &ActiveTarget,
+    channel: Channel,
+    current: Option<i64>,
+    target_value: i64,
+) -> (Value, bool) {
+    match target {
+        ActiveTarget::V3 {
+            controller_id,
+            device_id,
+        } => (
+            commands::strength_frame(
+                controller_id,
+                device_id,
+                channel,
+                commands::StrengthOp::Set(target_value),
+            ),
+            false,
+        ),
+        ActiveTarget::V4 { device_id, slot_id } => {
+            let assumed_zero_baseline = current.is_none();
+            let baseline = current.unwrap_or(0);
+            let frame = v4_commands::strength_frame(
+                device_id,
+                slot_id,
+                channel,
+                commands::StrengthOp::Set(target_value),
+                Some(baseline),
+            )
+            .expect("Some(baseline) always yields Some(frame) for Set");
+            (frame, assumed_zero_baseline)
+        }
+    }
+}
+
 /// Pauses everything at once (Feature 10): both channels' playlists,
 /// both channels' ramps, and the session timer -- reusing each
 /// subsystem's own existing pause, unchanged, per Mara's answer. Then,
@@ -843,6 +894,10 @@ async fn post_session_stop_all(State(state): State<AppState>) -> Response {
 /// bypasses calibration entirely and sends the raw wire value `0`
 /// directly -- the goal is a guaranteed *physical* zero, not a
 /// calibrated logical one that might not actually be zero on the wire.
+/// Always sends the zero (see `strength_set_frame_assuming_zero`) rather
+/// than silently skipping a channel whose V4 baseline was unknown --
+/// this is the panic-pause path, so it must not be blockable by a
+/// bookkeeping gap; a warning is logged instead when that happens.
 async fn post_session_pause_all(State(state): State<AppState>) -> Response {
     state.panel.playlist_pause(Channel::A);
     state.panel.playlist_pause(Channel::B);
@@ -863,27 +918,15 @@ async fn post_session_pause_all(State(state): State<AppState>) -> Response {
             continue;
         };
         let current = state.panel.strength_and_limit(channel).0;
-        let frame = match target {
-            ActiveTarget::V3 {
-                controller_id,
-                device_id,
-            } => Some(commands::strength_frame(
-                controller_id,
-                device_id,
-                channel,
-                commands::StrengthOp::Set(0),
-            )),
-            ActiveTarget::V4 { device_id, slot_id } => v4_commands::strength_frame(
-                device_id,
-                slot_id,
-                channel,
-                commands::StrengthOp::Set(0),
-                current,
-            ),
-        };
-        if let Some(frame) = frame {
-            let _ = tx.send(WsMessage::Text(frame.to_string().into()));
-            state.panel.apply_optimistic_strength(channel, 0);
+        let (frame, assumed_zero_baseline) =
+            strength_set_frame_assuming_zero(target, channel, current, 0);
+        let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+        state.panel.apply_optimistic_strength(channel, 0);
+        if assumed_zero_baseline {
+            state.panel.log(format!(
+                "Session pause: channel {}'s V4 baseline strength wasn't known -- assumed 0 to zero it anyway",
+                commands::channel_str(channel)
+            ));
         }
     }
 
@@ -895,8 +938,10 @@ async fn post_session_pause_all(State(state): State<AppState>) -> Response {
 
 /// Resumes everything `POST /api/session/pause` paused, in the
 /// documented order: restores each channel's pre-pause strength first
-/// (bypassing calibration, same as the pause side), *then* resumes
-/// playlists/ramps/timer. Each of those three only actually does
+/// (bypassing calibration, same as the pause side; see
+/// `strength_set_frame_assuming_zero` for why an unknown V4 baseline at
+/// this point still succeeds instead of silently no-oping), *then*
+/// resumes playlists/ramps/timer. Each of those three only actually does
 /// anything for a channel/subsystem that was genuinely paused --
 /// `playlist_is_paused` guards against `playlist_play` also starting a
 /// channel that was merely stopped (never playing) before the pause,
@@ -914,27 +959,15 @@ async fn post_session_resume_all(State(state): State<AppState>) -> Response {
             continue;
         };
         let current = state.panel.strength_and_limit(channel).0;
-        let frame = match target {
-            ActiveTarget::V3 {
-                controller_id,
-                device_id,
-            } => Some(commands::strength_frame(
-                controller_id,
-                device_id,
-                channel,
-                commands::StrengthOp::Set(pre_pause),
-            )),
-            ActiveTarget::V4 { device_id, slot_id } => v4_commands::strength_frame(
-                device_id,
-                slot_id,
-                channel,
-                commands::StrengthOp::Set(pre_pause),
-                current,
-            ),
-        };
-        if let Some(frame) = frame {
-            let _ = tx.send(WsMessage::Text(frame.to_string().into()));
-            state.panel.apply_optimistic_strength(channel, pre_pause);
+        let (frame, assumed_zero_baseline) =
+            strength_set_frame_assuming_zero(target, channel, current, pre_pause);
+        let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+        state.panel.apply_optimistic_strength(channel, pre_pause);
+        if assumed_zero_baseline {
+            state.panel.log(format!(
+                "Session resume: channel {}'s V4 baseline strength wasn't known -- assumed 0 before restoring to {pre_pause}",
+                commands::channel_str(channel)
+            ));
         }
     }
 
@@ -1283,6 +1316,36 @@ struct PulseBody {
     waveform: String,
 }
 
+/// Feature 10's pause drives strength to 0 (see `post_session_pause_all`),
+/// which on Coyote hardware gates *all* current output -- so a pulse sent
+/// while paused (e.g. a deliberate check-in ping to the wearer) would
+/// otherwise get a clean `200` and be forwarded, but never actually be
+/// felt. If `channel` is currently paused, `post_pulse` temporarily
+/// restores its pre-pause strength before sending the pulse frame, then
+/// this re-zeroes it once the pulse's duration has elapsed -- restoring
+/// the pause's guarantee of no *sustained* output, without that
+/// guarantee preventing a single felt check-in pulse. Only actually
+/// re-zeroes if the channel is *still* paused when the timer fires --
+/// `POST /api/session/resume` may have already run in the meantime and
+/// restored the real (non-zero) strength, which this must not clobber.
+async fn re_zero_after_checkin_pulse(panel: Arc<PanelState>, channel: Channel, delay_secs: u64) {
+    tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
+    if panel.strength_pause_state(channel).is_none() {
+        return;
+    }
+    let Ok((target, tx)) = panel.active_target_and_outbound() else {
+        return;
+    };
+    let current = panel.strength_and_limit(channel).0;
+    let (frame, _) = strength_set_frame_assuming_zero(&target, channel, current, 0);
+    let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+    panel.apply_optimistic_strength(channel, 0);
+    panel.log(format!(
+        "Check-in pulse on channel {}: re-zeroed after {delay_secs}s (session still paused)",
+        commands::channel_str(channel)
+    ));
+}
+
 async fn post_pulse(State(state): State<AppState>, Json(body): Json<PulseBody>) -> Response {
     let Some(channel) = commands::parse_channel(&body.channel) else {
         return error_response(StatusCode::BAD_REQUEST, "invalid channel");
@@ -1300,6 +1363,37 @@ async fn post_pulse(State(state): State<AppState>, Json(body): Json<PulseBody>) 
         Ok(pair) => pair,
         Err((status, message)) => return error_response(status, message),
     };
+
+    // See `re_zero_after_checkin_pulse`'s docs: a paused channel gets its
+    // pre-pause strength restored just for this pulse. If it was paused
+    // but the pre-pause value itself was never known (nothing was ever
+    // reported before the pause happened), there's no safe value to
+    // restore to -- refuse rather than guess a stimulation strength out
+    // of thin air, same principle as `POST /api/strength`'s own "set".
+    let restore_to = match state.panel.strength_pause_state(channel) {
+        Some(Some(pre_pause)) => Some(pre_pause),
+        Some(None) => {
+            return error_response(
+                StatusCode::CONFLICT,
+                "channel is paused and its pre-pause strength was never established -- set a strength manually before sending a check-in pulse",
+            );
+        }
+        None => None,
+    };
+    if let Some(restore_to) = restore_to {
+        let current = state.panel.strength_and_limit(channel).0;
+        let (frame, assumed_zero_baseline) =
+            strength_set_frame_assuming_zero(&target, channel, current, restore_to);
+        let _ = tx.send(WsMessage::Text(frame.to_string().into()));
+        state.panel.apply_optimistic_strength(channel, restore_to);
+        if assumed_zero_baseline {
+            state.panel.log(format!(
+                "Check-in pulse: channel {}'s V4 baseline strength wasn't known -- assumed 0 before temporarily restoring to {restore_to}",
+                commands::channel_str(channel)
+            ));
+        }
+    }
+
     let frame = match &target {
         ActiveTarget::V3 {
             controller_id,
@@ -1317,7 +1411,17 @@ async fn post_pulse(State(state): State<AppState>, Json(body): Json<PulseBody>) 
             }
         }
     };
-    send_frame(&state, &tx, frame)
+    let response = send_frame(&state, &tx, frame);
+
+    if restore_to.is_some() {
+        tokio::spawn(re_zero_after_checkin_pulse(
+            state.panel.clone(),
+            channel,
+            time.max(0) as u64,
+        ));
+    }
+
+    response
 }
 
 async fn post_reconnect(State(state): State<AppState>) -> Response {

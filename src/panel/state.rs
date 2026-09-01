@@ -1510,6 +1510,29 @@ impl PanelState {
         };
         slot.take()
     }
+
+    /// Peeks whether `channel` is currently in a paused strength cycle
+    /// (see `capture_pre_pause_strength`) without ending it, unlike
+    /// [`Self::take_pre_pause_strength`] -- `None` if not paused,
+    /// `Some(pre_pause_value)` if paused (`pre_pause_value` itself is
+    /// `None` on the rare case where the channel's strength wasn't even
+    /// known yet at the moment it was paused). Used by `POST /api/pulse`
+    /// so a deliberate check-in pulse can still be felt while paused
+    /// (see its own docs) without disturbing the pause itself.
+    pub fn strength_pause_state(&self, channel: Channel) -> Option<Option<i64>> {
+        let inner = self.inner.lock().unwrap();
+        let active = match channel {
+            Channel::A => inner.strength_pause_active_a,
+            Channel::B => inner.strength_pause_active_b,
+        };
+        if !active {
+            return None;
+        }
+        Some(match channel {
+            Channel::A => inner.pre_pause_strength_a,
+            Channel::B => inner.pre_pause_strength_b,
+        })
+    }
 }
 
 /// Picks the `Inner` field for `channel`'s playlist -- a free function
@@ -2255,6 +2278,49 @@ mod tests {
         state.apply_optimistic_strength(Channel::A, 20);
         assert!(state.capture_pre_pause_strength(Channel::A));
         assert_eq!(state.take_pre_pause_strength(Channel::A), Some(20));
+    }
+
+    #[test]
+    fn strength_pause_state_peeks_without_ending_the_cycle() {
+        // Regression coverage for the check-in-pulse fix: `POST
+        // /api/pulse` needs to know "is this channel paused, and what's
+        // the pre-pause value" without ending the pause the way
+        // `take_pre_pause_strength` does -- a check-in pulse must not
+        // itself resume the session.
+        let state = PanelState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        state.set_connected("c".into(), tx);
+        state.set_paired("d".into());
+
+        // Not paused at all.
+        assert_eq!(state.strength_pause_state(Channel::A), None);
+
+        state.set_device_strength(55, 0, 100, 100);
+        assert!(state.capture_pre_pause_strength(Channel::A));
+
+        // Paused, with a known pre-pause value -- peeking twice must
+        // return the same thing both times (not consumed).
+        assert_eq!(state.strength_pause_state(Channel::A), Some(Some(55)));
+        assert_eq!(state.strength_pause_state(Channel::A), Some(Some(55)));
+
+        // Ending the cycle for real makes it look unpaused again.
+        assert_eq!(state.take_pre_pause_strength(Channel::A), Some(55));
+        assert_eq!(state.strength_pause_state(Channel::A), None);
+    }
+
+    #[test]
+    fn strength_pause_state_reports_paused_even_with_no_known_pre_pause_value() {
+        // A channel paused before any real strength was ever reported
+        // (e.g. immediately after pairing) has nothing to restore to --
+        // `post_pulse` needs to tell this apart from "not paused at all"
+        // so it can refuse a check-in pulse rather than guess a strength.
+        let state = PanelState::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        state.set_connected("c".into(), tx);
+        state.set_paired("d".into());
+
+        assert!(state.capture_pre_pause_strength(Channel::A));
+        assert_eq!(state.strength_pause_state(Channel::A), Some(None));
     }
 
     #[test]

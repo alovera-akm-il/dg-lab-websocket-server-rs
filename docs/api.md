@@ -577,7 +577,10 @@ Common status codes:
 - `400` — invalid channel/op, empty `waveform`, or (`inc`/`set` only) the
   predicted resulting strength would exceed that channel's configured
   [upper limit](#upper-limit-1).
-- `409` — no device currently paired on either protocol.
+- `409` — no device currently paired on either protocol, or (`POST
+  /api/pulse` only) the channel is paused (see [Global
+  pause/resume](#global-pauseresume)) and its pre-pause strength was
+  never established, so there's no safe value to restore for the pulse.
 - `503` — the active protocol's relay connection isn't currently ready to
   send.
 
@@ -597,6 +600,21 @@ V4-specific cases:
   format (same parser V3 uses, `v3::pulse::parse_pulse_message`) or the
   request is rejected with **`400`**. `time` (seconds) is converted to
   milliseconds for V4's `d` field.
+
+**Pulsing a paused channel (check-in pulses):** a channel paused via
+`POST /api/session/pause` has its strength forced to `0`, which on
+Coyote hardware gates *all* current output — a pulse sent while paused
+would otherwise get a clean `200` and be forwarded, but never actually
+be felt (e.g. a deliberate check-in ping meant to ask the wearer to
+confirm they're okay). To keep this usable, `POST /api/pulse` on a
+paused channel temporarily restores that channel's pre-pause strength,
+sends the pulse, then re-zeroes it once `time` seconds have elapsed —
+unless `POST /api/session/resume` already ran in the meantime, in which
+case the real (non-zero) strength it restored is left alone. This
+doesn't end the pause itself; only `POST /api/session/resume` (or a
+manual override, see [Global pause/resume](#global-pauseresume)) does
+that. `409` if the channel is paused but its pre-pause strength was
+never known (nothing to safely restore to).
 
 ### `POST /api/limit`
 
@@ -1394,13 +1412,20 @@ No body. In order:
 1. Pauses both channels' playlists and any active ramps, and the session
    timer, if running — each is a no-op if that piece isn't currently
    active.
-2. For each channel with a known current strength: records it (for
+2. For each channel: records its current strength if known (for
    `POST /api/session/resume` to restore) and sends a raw `Set(0)`
    command directly to the wire — **bypassing calibration entirely**,
    since the goal is a guaranteed *physical* zero, not a calibrated
-   logical one that might not actually be zero on the wire. Best-effort
-   — silently skipped per channel if no device is reachable, or if that
-   channel's strength isn't known yet.
+   logical one that might not actually be zero on the wire. Skipped per
+   channel only if no device is reachable at all. If the channel's *own*
+   last-known strength isn't established yet (V4 only — V3's `Set` is
+   always absolute, no baseline needed), the zero is still sent by
+   assuming that unknown baseline is `0` — this is treated as known
+   domain state (a channel this server has never observed obviously
+   isn't mid-ramp), not a guess, so pause always physically zeroes every
+   reachable channel rather than silently skipping one because of a
+   bookkeeping gap. When that fallback is used, a warning is logged so
+   the gap itself is still visible.
 
 Calling this twice in a row without an intervening resume is safe: the
 second call's strength capture is a no-op (it won't overwrite the
@@ -1411,11 +1436,13 @@ per-subsystem pauses are already idempotent. Always `200 OK`.
 
 No body. Reverses `POST /api/session/pause`, in the documented order:
 restores each channel's recorded pre-pause strength first (also
-bypassing calibration, for the same reason), *then* resumes
-playlists/ramps/timer — only for whatever was actually paused (starting
-something that was merely stopped, not paused, is `playlist_play`'s job,
-not this endpoint's). Always `200 OK`, including when nothing was
-paused.
+bypassing calibration, for the same reason — and using the same
+assume-`0`-if-unknown fallback as pause above, so a V4 relay reconnect
+between pause and resume can't silently leave a channel stuck at 0),
+*then* resumes playlists/ramps/timer — only for whatever was actually
+paused (starting something that was merely stopped, not paused, is
+`playlist_play`'s job, not this endpoint's). Always `200 OK`, including
+when nothing was paused.
 
 **A manual command "takes over" and ends the paused cycle for that piece
 early** — a manual `POST /api/strength` call, a button-mapped strength
