@@ -775,11 +775,16 @@ configurable checkpoints — `src/panel/session.rs`/
 `src/panel/session_runner.rs`. Every checkpoint (recurring check-ins, one-off
 labeled phase gates, a fixed 5-minute-before-the-end warning, and the final
 end) is known in full the instant the timer starts, so the whole run is
-flattened into one sorted schedule up front and the runner sleeps exactly to
-each one in turn — the same "sleep the exact needed duration" discipline
-`playlist_runner`/`ramp_runner` already use, rather than polling every
-second. Session config is session-scoped like playlists/ramps — it doesn't
-survive a panel restart.
+flattened into one sorted schedule up front and the runner walks it in
+order. Unlike `playlist_runner`/`ramp_runner` (which only ever need to wake
+at the next value change), the runner still wakes and broadcasts once a
+second even between checkpoints (`PanelState::session_heartbeat`) — a
+snapshot's `elapsed`/`remaining` are computed live from a stored deadline
+either way, so the heartbeat mutates nothing, it just gives `/events`
+subscribers something to re-render from every second instead of only
+whenever a checkpoint (which can be many minutes away) happens to fire.
+Session config is session-scoped like playlists/ramps — it doesn't survive
+a panel restart.
 
 #### `POST /api/session/timer`
 

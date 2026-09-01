@@ -30,13 +30,18 @@ pub async fn run(
 
     for checkpoint in schedule {
         let wait = checkpoint.at_seconds.saturating_sub(elapsed);
-        if wait > 0 {
+        // Sleep in 1-second steps rather than one long sleep, broadcasting
+        // a heartbeat after each -- otherwise the countdown display would
+        // only update whenever a checkpoint happens to fire, which can be
+        // many minutes apart (see `session_heartbeat`'s doc comment).
+        for _ in 0..wait {
             tokio::select! {
-                () = tokio::time::sleep(Duration::from_secs(wait.into())) => {}
+                () = tokio::time::sleep(Duration::from_secs(1)) => {}
                 () = token.cancelled() => {
                     return; // paused or stopped externally -- state already correct
                 }
             }
+            panel.session_heartbeat();
         }
         elapsed = checkpoint.at_seconds;
 

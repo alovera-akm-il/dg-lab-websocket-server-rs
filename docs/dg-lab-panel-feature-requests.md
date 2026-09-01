@@ -258,13 +258,22 @@ readout and a Cancel button, replacing the picker.
 ## 3. Session Timer with Check-in Gates
 
 **Status: implemented.** `src/panel/session.rs` + `src/panel/session_runner.rs`;
-the design below (a precomputed sorted schedule the runner sleeps exactly
-to, rather than a 1-second poll; pause/resume via captured elapsed time,
-no schedule recomputation) matches what shipped — see `docs/api.md`'s
-"Session timer" section for the final endpoint/SSE reference. Unit tests
-covering the schedule builder and pause/resume are in place and passing;
-integration-level (real timer ticks over HTTP) and live-UI verification
-have not been run yet.
+the design below (a precomputed sorted schedule; pause/resume via captured
+elapsed time, no schedule recomputation) matches what shipped — see
+`docs/api.md`'s "Session timer" section for the final endpoint/SSE
+reference. Unit tests covering the schedule builder and pause/resume are
+in place and passing.
+
+**Update:** the runner originally slept in one stretch straight to each
+checkpoint (see the "one tick-driving improvement" bullet below) and only
+broadcast on `/events` when a checkpoint fired. In practice that meant the
+panel's countdown display froze between checkpoints — which can be many
+minutes apart — instead of counting down live like the ramp progress bar
+does. Fixed by reinstating a 1-second wakeup (`PanelState::session_heartbeat`,
+called from the runner's wait loop) that broadcasts a fresh snapshot
+without mutating any state; `elapsed`/`remaining` were already computed
+live from a stored deadline, so the heartbeat's only job is giving
+subscribers something to re-render from every second.
 
 Built-in session timer that fires webhook/SSE events at configurable checkpoints.
 
@@ -326,13 +335,19 @@ standard shape for "a timed process that drives state and fires events,"
 which is a good sign the architecture generalizes rather than each
 feature needing its own bespoke plumbing.
 
-- One tick-driving improvement over a naive 1s poll: rather than waking
-  every second, compute the time until the *next* thing that matters
+- One tick-driving choice that didn't survive contact with the UI: the
+  original runner computed the time until the *next* thing that matters
   (soonest of: next check-in, next phase gate, or the end) and `sleep`
   exactly that long, same as `playlist_runner` sleeping the entry's exact
-  resolved duration rather than polling. Simpler to reason about and
-  doesn't wake the task 3600 times for an hour-long session that only
-  needs ~7 wakeups.
+  resolved duration rather than polling — fewer wakeups (an hour-long
+  session only needs ~7 instead of 3600), but it also meant the only
+  thing telling `/events` subscribers to re-render was a checkpoint
+  firing, so the countdown display would sit frozen for however long the
+  gap between checkpoints was. Reinstated a 1-second wakeup after the
+  fact (`PanelState::session_heartbeat`, see the Update note above) —
+  the extra wakeups turned out to matter more than the efficiency
+  argument against them, the same way `ramp_runner` already accepted
+  that tradeoff for its own progress bar.
 - `pause`/`play` need to capture and restore "time until next event" the
   same way `PlaylistQueue::pause` captures `remaining` — direct parallel,
   same bug class (don't just re-derive from a stale start-time).

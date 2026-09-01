@@ -1218,6 +1218,19 @@ impl PanelState {
         Some((schedule, elapsed, total, token))
     }
 
+    /// Nudges SSE subscribers to re-render with a fresh snapshot without
+    /// advancing the schedule cursor or mutating any state -- called once
+    /// a second by `session_runner::run` while waiting for the next
+    /// checkpoint, purely so `session.elapsed`/`remaining` (already
+    /// computed live from a stored deadline, see
+    /// `session::Session::live_elapsed_secs`) actually counts down in the
+    /// UI between checkpoints instead of jumping only when one fires --
+    /// the same role `ramp_tick` plays in keeping a ramp's progress bar
+    /// moving between value changes.
+    pub fn session_heartbeat(&self) {
+        self.notify_changed();
+    }
+
     /// Called by the runner after firing the checkpoint at the current
     /// cursor, to move past it.
     pub fn session_advance(&self) {
