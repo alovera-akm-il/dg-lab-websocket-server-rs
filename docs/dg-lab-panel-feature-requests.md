@@ -244,9 +244,11 @@ already calls — on a timer instead of a button click.
   every other per-channel field already does — `null` when no ramp is
   active.
 
-**UI:** yes — see the mockup's Strength card. Each channel gets a compact
-ramp row under its existing slider: a profile toggle (Linear / Random
-walk / Hold — same `.mode-toggle` component the Pulse Waveform card
+**UI:** yes — see the Strength card. Each channel gets a compact ramp row
+under its strength dial (originally a linear slider; re-skinned to a
+circular gauge later, the ramp row itself unaffected): a profile toggle
+(Linear / Random walk / Hold — same `.mode-toggle` component the Pulse
+Waveform card
 already uses for Single/Playlist), the profile's specific fields, and
 while one's running, a small progress bar plus live current→target
 readout and a Cancel button, replacing the picker.
@@ -703,10 +705,12 @@ required, `arousal` required 1–10, `discomfort` defaults to `"none"`,
 `notes` optional), logs it as `subjective.check_in` via the existing
 `log_with`, and stores it on `PanelState` (`CheckIn` in `src/panel/state.rs`)
 for `/events`' new `lastCheckIn` field. The Session timer card shows a
-"Last check-in" status line. See `docs/api.md`'s "Subjective check-in"
-section for the final reference. Unit tests (`record_check_in_populates_
-the_snapshot`) are in place and passing; integration-level/live-UI
-verification have not been run yet.
+"Last check-in" status line, plus a submission form (color toggle, arousal,
+discomfort, notes) that posts to this endpoint directly — added after the
+initial ship, which only had the read-only status line and no way to
+actually log one from the panel itself. See `docs/api.md`'s "Subjective
+check-in" section for the final reference. Unit tests (`record_check_in_
+populates_the_snapshot`) are in place and passing.
 
 **API:**
 

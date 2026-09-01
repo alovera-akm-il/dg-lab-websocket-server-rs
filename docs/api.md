@@ -884,6 +884,13 @@ the most recent one for `/events`' `lastCheckIn`.
 line's `extra.event` is `"subjective.check_in"`, following the existing
 dotted event-name taxonomy (`session.started`, `button_feedback`, …).
 
+The Session timer card has a form for this (`#checkin-color-toggle`/
+`#checkin-arousal`/`#checkin-discomfort`/`#checkin-notes`/
+`#checkin-submit` in `app.js`) that posts here directly — it isn't gated
+on a session being active, so an operator can log one any time, not just
+when the timer's own check-in reminder fires (that reminder is only a
+webhook/log event; it never calls this endpoint itself).
+
 #### `lastCheckIn` in `/events`
 
 `null` until the first check-in of the process's lifetime:

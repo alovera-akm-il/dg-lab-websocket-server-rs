@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DG-LAB Control Panel</title>
-<meta name="theme-color" content="#080b12">
+<meta name="theme-color" content="#000000">
 <link rel="manifest" href="/assets/manifest.json">
 <link rel="icon" href="/assets/icons/icon-192.png">
 <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/assets/style.css">
 </head>
 <body>
@@ -34,6 +34,8 @@
       </button>
     </div>
   </header>
+
+  <div class="section-divider"><span>Live Control</span></div>
 
   <div class="card-row" style="--cols: 4fr 8fr;">
   <section class="card card-in" style="animation-delay: 20ms;">
@@ -109,187 +111,30 @@
   </div>
 
   <div class="card-row" style="--cols: 5fr 7fr;">
-  <section class="card card-in" style="animation-delay: 100ms;">
-    <div class="card-header">
-      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
-      <div class="card-title">Recipes</div>
-    </div>
-    <div class="recipe-list" id="recipe-list">
-      <div class="recipe-empty" id="recipe-empty">No recipes saved yet.</div>
-    </div>
-    <div class="row" style="margin-top:10px;">
-      <input type="text" id="recipe-save-name" placeholder="Recipe name" style="flex:1; min-width:120px;">
-      <button class="btn small" id="recipe-save-btn">Save</button>
-      <button class="btn small" id="recipe-clear-btn">Clear form</button>
-    </div>
-
-    <div class="recipe-builder" id="recipe-builder">
-      <div class="recipe-section">
-        <label class="checkbox-label"><input type="checkbox" id="rb-timer-enable"> Timer</label>
-        <div class="recipe-section-fields" id="rb-timer-fields" hidden>
-          <div class="row">
-            <label class="field-label">Duration (min)</label><input type="number" id="rb-timer-duration" value="60" min="1">
-            <label class="field-label">Check-in (min)</label><input type="number" id="rb-timer-checkin" value="0" min="0">
-          </div>
-          <label class="checkbox-label"><input type="checkbox" id="rb-timer-autostop" checked> Stop playlists at end</label>
-          <div class="recipe-field-note">Phase gates aren't editable here &mdash; use the Python client for a recipe that needs them. Editing and resaving a recipe that already has gates keeps them as-is.</div>
-        </div>
-      </div>
-
-      <div class="recipe-section">
-        <label class="checkbox-label"><input type="checkbox" id="rb-playlist-a-enable"> Playlist A</label>
-        <div class="recipe-section-fields" id="rb-playlist-a-fields" hidden>
-          <div class="row">
-            <select id="rb-playlist-a-template" style="flex:1;"></select>
-            <label class="checkbox-label"><input type="checkbox" id="rb-playlist-a-shuffle"> Shuffle</label>
-          </div>
-        </div>
-      </div>
-
-      <div class="recipe-section">
-        <label class="checkbox-label"><input type="checkbox" id="rb-playlist-b-enable"> Playlist B</label>
-        <div class="recipe-section-fields" id="rb-playlist-b-fields" hidden>
-          <div class="row">
-            <select id="rb-playlist-b-template" style="flex:1;"></select>
-            <label class="checkbox-label"><input type="checkbox" id="rb-playlist-b-shuffle"> Shuffle</label>
-          </div>
-        </div>
-      </div>
-
-      <div class="recipe-section">
-        <label class="checkbox-label"><input type="checkbox" id="rb-ramp-a-enable"> Ramp A</label>
-        <div class="recipe-section-fields" id="rb-ramp-a-fields" hidden>
-          <div class="mode-toggle" id="rb-ramp-a-toggle">
-            <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
-            <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
-            <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
-          </div>
-          <div class="row" id="rb-ramp-a-linear">
-            <label class="field-label">From</label><input type="number" id="rb-ramp-a-from" value="10" min="0">
-            <label class="field-label">To</label><input type="number" id="rb-ramp-a-to" value="40" min="0">
-            <label class="field-label">Over (s)</label><input type="number" id="rb-ramp-a-over" value="600" min="1">
-          </div>
-          <div class="row" id="rb-ramp-a-random-walk" hidden>
-            <label class="field-label">Base</label><input type="number" id="rb-ramp-a-base" value="30" min="0">
-            <label class="field-label">&plusmn;</label><input type="number" id="rb-ramp-a-variance" value="15" min="0">
-            <label class="field-label">Step (s)</label><input type="number" id="rb-ramp-a-step" value="30" min="1">
-            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-a-rw-duration" value="600" min="1">
-          </div>
-          <div class="row" id="rb-ramp-a-hold" hidden>
-            <label class="field-label">Value</label><input type="number" id="rb-ramp-a-hold-value" value="25" min="0">
-            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-a-hold-duration" value="300" min="1">
-          </div>
-        </div>
-      </div>
-
-      <div class="recipe-section">
-        <label class="checkbox-label"><input type="checkbox" id="rb-ramp-b-enable"> Ramp B</label>
-        <div class="recipe-section-fields" id="rb-ramp-b-fields" hidden>
-          <div class="mode-toggle" id="rb-ramp-b-toggle">
-            <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
-            <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
-            <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
-          </div>
-          <div class="row" id="rb-ramp-b-linear">
-            <label class="field-label">From</label><input type="number" id="rb-ramp-b-from" value="10" min="0">
-            <label class="field-label">To</label><input type="number" id="rb-ramp-b-to" value="40" min="0">
-            <label class="field-label">Over (s)</label><input type="number" id="rb-ramp-b-over" value="600" min="1">
-          </div>
-          <div class="row" id="rb-ramp-b-random-walk" hidden>
-            <label class="field-label">Base</label><input type="number" id="rb-ramp-b-base" value="30" min="0">
-            <label class="field-label">&plusmn;</label><input type="number" id="rb-ramp-b-variance" value="15" min="0">
-            <label class="field-label">Step (s)</label><input type="number" id="rb-ramp-b-step" value="30" min="1">
-            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-b-rw-duration" value="600" min="1">
-          </div>
-          <div class="row" id="rb-ramp-b-hold" hidden>
-            <label class="field-label">Value</label><input type="number" id="rb-ramp-b-hold-value" value="25" min="0">
-            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-b-hold-duration" value="300" min="1">
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div class="row" style="margin-top:12px;">
-      <button class="btn small" id="session-pause-all">Pause everything</button>
-      <button class="btn small" id="session-resume-all">Resume everything</button>
-      <button class="btn small danger" id="recipe-stop-all">Emergency stop everything</button>
-    </div>
-    <div class="note">
-      A recipe composes a session timer, per-channel playlists (by saved template name), and per-channel ramps into
-      one Start button. Check a section on to include it. Playlist template lists refresh from
-      <code>GET /api/templates</code> when this card loads. <strong>Pause everything</strong> zeroes both channels'
-      strength (restored on resume) and pauses playlists/ramps/timer; <strong>Emergency stop</strong> is not resumable.
-    </div>
-  </section>
-  <section class="card card-in" style="animation-delay: 120ms;">
-    <div class="card-header">
-      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M9 2h6"/></svg></div>
-      <div class="card-title">Session timer</div>
-    </div>
-
-    <div class="checkin-status" id="checkin-status" hidden></div>
-
-    <div id="session-config">
-      <div class="row">
-        <label class="field-label" for="session-duration">Duration (min)</label>
-        <input type="number" id="session-duration" value="60" min="1">
-        <label class="field-label" for="session-checkin">Check-in every (min)</label>
-        <input type="number" id="session-checkin" value="15" min="0">
-        <label class="checkbox-label"><input type="checkbox" id="session-auto-stop-playlists" checked> Stop playlists at end</label>
-      </div>
-      <div class="row" style="margin-top:10px;">
-        <input type="number" id="session-gate-at" placeholder="At (min)" min="0">
-        <input type="text" id="session-gate-label" placeholder="Gate label, e.g. midpoint" style="flex:1; min-width:140px;">
-        <button class="btn small" id="session-gate-add">+ Add gate</button>
-      </div>
-      <div class="session-gate-list" id="session-gate-list">
-        <div class="session-gate-empty" id="session-gate-empty">No phase gates yet &mdash; optional.</div>
-      </div>
-      <button class="btn primary" id="session-start" style="margin-top:12px;">Start session</button>
-    </div>
-
-    <div id="session-active" hidden>
-      <div class="session-countdown">
-        <span class="elapsed mono" id="session-elapsed">00:00</span>
-        <span class="of">/ <span id="session-duration-display">00:00</span> elapsed</span>
-        <span class="remaining mono" id="session-remaining"></span>
-      </div>
-      <div class="gate-track" id="session-gate-track"></div>
-      <div class="row session-controls">
-        <button class="btn round primary" id="session-playpause" title="Pause">
-          <svg id="session-playpause-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-        </button>
-        <button class="btn small" id="session-end">End session</button>
-        <span style="flex:1"></span>
-        <span class="mono" id="session-summary"></span>
-      </div>
-    </div>
-
-    <div class="note">
-      Fires a webhook at every check-in and phase gate, and can auto-stop both channels' playlists when the timer
-      ends. Session config is session-scoped, like playlists &mdash; it doesn't survive a panel restart.
-    </div>
-  </section>
-  </div>
-
-  <div class="card-row" style="--cols: 5fr 7fr;">
   <section class="card card-in" style="animation-delay: 140ms;">
     <div class="card-header">
       <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/></svg></div>
       <div class="card-title">Strength</div>
     </div>
     <div class="disabled-note" id="controls-disabled-note" hidden>No device paired on either protocol &mdash; pair your phone above to enable these controls.</div>
-    <fieldset class="controls" id="strength-controls">
+    <fieldset class="controls channel-columns" id="strength-controls">
       <div class="channel">
         <div class="channel-head">
           <span class="channel-title">Channel A</span>
-          <span class="channel-value mono" id="strength-a-inline">-<span class="cap" id="strength-a-cap"></span></span>
-          <span class="logical-value mono" id="strength-a-logical"></span>
         </div>
-        <div class="slider-row">
-          <input type="range" class="strength-slider" id="slider-a" min="0" max="200" step="1" value="0" data-channel="A">
+        <div class="dial-wrap">
+          <div class="dial">
+            <svg class="dial-ring" viewBox="0 0 200 200" aria-hidden="true">
+              <circle class="dial-ring-track" cx="100" cy="100" r="86"></circle>
+              <circle class="dial-ring-fill" id="dial-fill-a" cx="100" cy="100" r="86"></circle>
+            </svg>
+            <div class="dial-center">
+              <span class="dial-value mono" id="strength-a-inline">-<span class="cap" id="strength-a-cap"></span></span>
+              <span class="logical-value mono" id="strength-a-logical"></span>
+            </div>
+          </div>
         </div>
-        <div class="row">
+        <div class="row dial-buttons">
           <button class="btn icon" data-strength='{"channel":"A","op":"dec"}'>&minus;</button>
           <button class="btn icon" data-strength='{"channel":"A","op":"inc"}'>+</button>
         </div>
@@ -352,13 +197,20 @@
       <div class="channel">
         <div class="channel-head">
           <span class="channel-title">Channel B</span>
-          <span class="channel-value mono" id="strength-b-inline">-<span class="cap" id="strength-b-cap"></span></span>
-          <span class="logical-value mono" id="strength-b-logical"></span>
         </div>
-        <div class="slider-row">
-          <input type="range" class="strength-slider" id="slider-b" min="0" max="200" step="1" value="0" data-channel="B">
+        <div class="dial-wrap">
+          <div class="dial dial-b">
+            <svg class="dial-ring" viewBox="0 0 200 200" aria-hidden="true">
+              <circle class="dial-ring-track" cx="100" cy="100" r="86"></circle>
+              <circle class="dial-ring-fill dial-ring-fill-b" id="dial-fill-b" cx="100" cy="100" r="86"></circle>
+            </svg>
+            <div class="dial-center">
+              <span class="dial-value mono" id="strength-b-inline">-<span class="cap" id="strength-b-cap"></span></span>
+              <span class="logical-value mono" id="strength-b-logical"></span>
+            </div>
+          </div>
         </div>
-        <div class="row">
+        <div class="row dial-buttons">
           <button class="btn icon" data-strength='{"channel":"B","op":"dec"}'>&minus;</button>
           <button class="btn icon" data-strength='{"channel":"B","op":"inc"}'>+</button>
         </div>
@@ -633,6 +485,198 @@
     </div>
   </section>
   </div>
+
+  <div class="section-divider"><span>Session Automation</span></div>
+
+  <div class="card-row" style="--cols: 5fr 7fr;">
+  <section class="card card-in" style="animation-delay: 100ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg></div>
+      <div class="card-title">Recipes</div>
+    </div>
+    <div class="recipe-list" id="recipe-list">
+      <div class="recipe-empty" id="recipe-empty">No recipes saved yet.</div>
+    </div>
+    <div class="row" style="margin-top:10px;">
+      <input type="text" id="recipe-save-name" placeholder="Recipe name" style="flex:1; min-width:120px;">
+      <button class="btn small" id="recipe-save-btn">Save</button>
+      <button class="btn small" id="recipe-clear-btn">Clear form</button>
+    </div>
+
+    <div class="recipe-builder" id="recipe-builder">
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-timer-enable"> Timer</label>
+        <div class="recipe-section-fields" id="rb-timer-fields" hidden>
+          <div class="row">
+            <label class="field-label">Duration (min)</label><input type="number" id="rb-timer-duration" value="60" min="1">
+            <label class="field-label">Check-in (min)</label><input type="number" id="rb-timer-checkin" value="0" min="0">
+          </div>
+          <label class="checkbox-label"><input type="checkbox" id="rb-timer-autostop" checked> Stop playlists at end</label>
+          <div class="recipe-field-note">Phase gates aren't editable here &mdash; use the Python client for a recipe that needs them. Editing and resaving a recipe that already has gates keeps them as-is.</div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-playlist-a-enable"> Playlist A</label>
+        <div class="recipe-section-fields" id="rb-playlist-a-fields" hidden>
+          <div class="row">
+            <select id="rb-playlist-a-template" style="flex:1;"></select>
+            <label class="checkbox-label"><input type="checkbox" id="rb-playlist-a-shuffle"> Shuffle</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-playlist-b-enable"> Playlist B</label>
+        <div class="recipe-section-fields" id="rb-playlist-b-fields" hidden>
+          <div class="row">
+            <select id="rb-playlist-b-template" style="flex:1;"></select>
+            <label class="checkbox-label"><input type="checkbox" id="rb-playlist-b-shuffle"> Shuffle</label>
+          </div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-ramp-a-enable"> Ramp A</label>
+        <div class="recipe-section-fields" id="rb-ramp-a-fields" hidden>
+          <div class="mode-toggle" id="rb-ramp-a-toggle">
+            <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
+            <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
+            <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
+          </div>
+          <div class="row" id="rb-ramp-a-linear">
+            <label class="field-label">From</label><input type="number" id="rb-ramp-a-from" value="10" min="0">
+            <label class="field-label">To</label><input type="number" id="rb-ramp-a-to" value="40" min="0">
+            <label class="field-label">Over (s)</label><input type="number" id="rb-ramp-a-over" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-a-random-walk" hidden>
+            <label class="field-label">Base</label><input type="number" id="rb-ramp-a-base" value="30" min="0">
+            <label class="field-label">&plusmn;</label><input type="number" id="rb-ramp-a-variance" value="15" min="0">
+            <label class="field-label">Step (s)</label><input type="number" id="rb-ramp-a-step" value="30" min="1">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-a-rw-duration" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-a-hold" hidden>
+            <label class="field-label">Value</label><input type="number" id="rb-ramp-a-hold-value" value="25" min="0">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-a-hold-duration" value="300" min="1">
+          </div>
+        </div>
+      </div>
+
+      <div class="recipe-section">
+        <label class="checkbox-label"><input type="checkbox" id="rb-ramp-b-enable"> Ramp B</label>
+        <div class="recipe-section-fields" id="rb-ramp-b-fields" hidden>
+          <div class="mode-toggle" id="rb-ramp-b-toggle">
+            <button type="button" class="mode-btn active" data-ramp-profile="linear">Linear</button>
+            <button type="button" class="mode-btn" data-ramp-profile="random-walk">Random walk</button>
+            <button type="button" class="mode-btn" data-ramp-profile="hold">Hold</button>
+          </div>
+          <div class="row" id="rb-ramp-b-linear">
+            <label class="field-label">From</label><input type="number" id="rb-ramp-b-from" value="10" min="0">
+            <label class="field-label">To</label><input type="number" id="rb-ramp-b-to" value="40" min="0">
+            <label class="field-label">Over (s)</label><input type="number" id="rb-ramp-b-over" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-b-random-walk" hidden>
+            <label class="field-label">Base</label><input type="number" id="rb-ramp-b-base" value="30" min="0">
+            <label class="field-label">&plusmn;</label><input type="number" id="rb-ramp-b-variance" value="15" min="0">
+            <label class="field-label">Step (s)</label><input type="number" id="rb-ramp-b-step" value="30" min="1">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-b-rw-duration" value="600" min="1">
+          </div>
+          <div class="row" id="rb-ramp-b-hold" hidden>
+            <label class="field-label">Value</label><input type="number" id="rb-ramp-b-hold-value" value="25" min="0">
+            <label class="field-label">For (s)</label><input type="number" id="rb-ramp-b-hold-duration" value="300" min="1">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:12px;">
+      <button class="btn small" id="session-pause-all">Pause everything</button>
+      <button class="btn small" id="session-resume-all">Resume everything</button>
+      <button class="btn small danger" id="recipe-stop-all">Emergency stop everything</button>
+    </div>
+    <div class="note">
+      A recipe composes a session timer, per-channel playlists (by saved template name), and per-channel ramps into
+      one Start button. Check a section on to include it. Playlist template lists refresh from
+      <code>GET /api/templates</code> when this card loads. <strong>Pause everything</strong> zeroes both channels'
+      strength (restored on resume) and pauses playlists/ramps/timer; <strong>Emergency stop</strong> is not resumable.
+    </div>
+  </section>
+  <section class="card card-in" style="animation-delay: 120ms;">
+    <div class="card-header">
+      <div class="icon-wrap"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5"/><path d="M9 2h6"/></svg></div>
+      <div class="card-title">Session timer</div>
+    </div>
+
+    <div class="checkin-form">
+      <div class="row" style="margin-bottom: 8px;">
+        <div class="mode-toggle" id="checkin-color-toggle">
+          <button type="button" class="mode-btn checkin-color-btn active" data-color="green">Green</button>
+          <button type="button" class="mode-btn checkin-color-btn" data-color="yellow">Yellow</button>
+          <button type="button" class="mode-btn checkin-color-btn" data-color="red">Red</button>
+        </div>
+        <label class="field-label" for="checkin-arousal">Arousal</label>
+        <input type="number" id="checkin-arousal" value="5" min="1" max="10" style="width: 56px;">
+        <select id="checkin-discomfort">
+          <option value="none">No discomfort</option>
+          <option value="mild">Mild discomfort</option>
+          <option value="moderate">Moderate discomfort</option>
+          <option value="severe">Severe discomfort</option>
+        </select>
+      </div>
+      <div class="row" style="margin-bottom: 12px;">
+        <input type="text" id="checkin-notes" placeholder="Notes (optional)" style="flex: 1; min-width: 140px;">
+        <button class="btn primary small" id="checkin-submit">Log check-in</button>
+      </div>
+    </div>
+
+    <div class="checkin-status" id="checkin-status" hidden></div>
+
+    <div id="session-config">
+      <div class="row">
+        <label class="field-label" for="session-duration">Duration (min)</label>
+        <input type="number" id="session-duration" value="60" min="1">
+        <label class="field-label" for="session-checkin">Check-in every (min)</label>
+        <input type="number" id="session-checkin" value="15" min="0">
+        <label class="checkbox-label"><input type="checkbox" id="session-auto-stop-playlists" checked> Stop playlists at end</label>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <input type="number" id="session-gate-at" placeholder="At (min)" min="0">
+        <input type="text" id="session-gate-label" placeholder="Gate label, e.g. midpoint" style="flex:1; min-width:140px;">
+        <button class="btn small" id="session-gate-add">+ Add gate</button>
+      </div>
+      <div class="session-gate-list" id="session-gate-list">
+        <div class="session-gate-empty" id="session-gate-empty">No phase gates yet &mdash; optional.</div>
+      </div>
+      <button class="btn primary" id="session-start" style="margin-top:12px;">Start session</button>
+    </div>
+
+    <div id="session-active" hidden>
+      <div class="session-countdown">
+        <span class="elapsed mono" id="session-elapsed">00:00</span>
+        <span class="of">/ <span id="session-duration-display">00:00</span> elapsed</span>
+        <span class="remaining mono" id="session-remaining"></span>
+      </div>
+      <div class="gate-track" id="session-gate-track"></div>
+      <div class="row session-controls">
+        <button class="btn round primary" id="session-playpause" title="Pause">
+          <svg id="session-playpause-icon" width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+        </button>
+        <button class="btn small" id="session-end">End session</button>
+        <span style="flex:1"></span>
+        <span class="mono" id="session-summary"></span>
+      </div>
+    </div>
+
+    <div class="note">
+      The timer fires a webhook reminder at every check-in interval and phase gate &mdash; it doesn't log a check-in
+      itself, so use the form above whenever you actually want one recorded (anytime, not just when reminded). Can
+      also auto-stop both channels' playlists when the timer ends. Session config is session-scoped, like playlists
+      &mdash; it doesn't survive a panel restart.
+    </div>
+  </section>
+  </div>
+
+  <div class="section-divider"><span>Configuration</span></div>
 
   <div class="card-row" style="--cols: 1fr;">
   <section class="card card-in" style="animation-delay: 220ms;">

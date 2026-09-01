@@ -8,8 +8,6 @@
   const strengthBCapEl = $('strength-b-cap');
   const strengthALogicalEl = $('strength-a-logical');
   const strengthBLogicalEl = $('strength-b-logical');
-  const sliderAEl = $('slider-a');
-  const sliderBEl = $('slider-b');
   const buttonActionEl = $('button-action');
   const activeDeviceEl = $('active-device');
   const batteryRowEl = $('battery-row');
@@ -203,26 +201,21 @@
     }
   }
 
-  // -- live strength sliders --------------------------------------------
+  // -- live strength dials ------------------------------------------------
   //
-  // Dragging the slider sends /api/strength {op:"set"} itself -- there's
-  // no separate "Set" button. Sending on every native `input` tick would
-  // flood the relay (and the physical device) with a command per pixel of
-  // drag, so sends are throttled to at most one every THROTTLE_MS while
-  // actively dragging, with a final guaranteed send on release (`change`)
-  // so the exact released value always reaches the device even if it
-  // didn't land on a throttle tick.
-  const THROTTLE_MS = 120;
+  // Purely a readout -- actual adjustment is the +/- buttons below it
+  // (delegated `[data-strength]` listener further down), not drag-to-set.
+  // A fixed-step control is harder to fling to an unintended high strength
+  // by accident than a free-drag slider, which matters more here than
+  // quick coarse adjustment. `sync()` is called on every SSE snapshot.
+  const DIAL_CIRCUMFERENCE = 2 * Math.PI * 86; // matches the ring's r=86 in index.html/style.css
 
-  function makeSliderController(channel, sliderEl, valueEl, capEl) {
-    let dragging = false;
-    let lastSentAt = 0;
-    let pendingTimer = null;
+  function makeDialController(fillEl, valueEl, capEl) {
     let currentLimit = null; // the operator-configured upper limit, or null
 
     function setFill(value, max) {
-      const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
-      sliderEl.style.setProperty('--pct', `${pct}%`);
+      const pct = max > 0 ? Math.max(0, Math.min(1, value / max)) : 0;
+      fillEl.style.strokeDashoffset = String(DIAL_CIRCUMFERENCE * (1 - pct));
     }
 
     function setDisplay(value) {
@@ -230,55 +223,19 @@
       capEl.textContent = currentLimit != null ? `cap ${currentLimit}` : '';
     }
 
-    function send(value) {
-      lastSentAt = Date.now();
-      postJson('/api/strength', { channel, op: 'set', value });
-    }
-
-    function scheduleSend(value) {
-      const elapsed = Date.now() - lastSentAt;
-      if (elapsed >= THROTTLE_MS) {
-        send(value);
-      } else if (!pendingTimer) {
-        pendingTimer = setTimeout(() => {
-          pendingTimer = null;
-          send(Number(sliderEl.value));
-        }, THROTTLE_MS - elapsed);
-      }
-    }
-
-    sliderEl.addEventListener('pointerdown', () => { dragging = true; });
-    sliderEl.addEventListener('input', () => {
-      const value = Number(sliderEl.value);
-      setDisplay(value);
-      setFill(value, Number(sliderEl.max));
-      scheduleSend(value);
-    });
-    sliderEl.addEventListener('change', () => {
-      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
-      send(Number(sliderEl.value));
-      dragging = false;
-    });
-    // Keyboard-driven changes (arrow keys) don't fire pointerdown; `change`
-    // still fires once the key is released, which is enough to release
-    // the drag lock below without needing a separate keyup handler.
-    sliderEl.addEventListener('blur', () => { dragging = false; });
-
     return {
-      isDragging: () => dragging,
+      isDragging: () => false,
       sync(value, limit) {
         currentLimit = limit;
         const max = limit != null ? Math.max(limit, value ?? 0) : MAX_STRENGTH;
-        sliderEl.max = String(max);
-        sliderEl.value = String(value ?? 0);
         setFill(value ?? 0, max);
         setDisplay(value);
       },
     };
   }
 
-  const sliderA = makeSliderController('A', sliderAEl, strengthAInlineEl, strengthACapEl);
-  const sliderB = makeSliderController('B', sliderBEl, strengthBInlineEl, strengthBCapEl);
+  const sliderA = makeDialController($('dial-fill-a'), strengthAInlineEl, strengthACapEl);
+  const sliderB = makeDialController($('dial-fill-b'), strengthBInlineEl, strengthBCapEl);
 
   // -- strength ramps: a programmatic curve the panel drives on a 1s
   // tick, in place of individual manual +/-/Set calls ------------------
@@ -1013,6 +970,7 @@
       try { message = (await res.json()).error || message; } catch (e) { /* ignore */ }
       showToast(message);
     }
+    return res.ok;
   }
 
   async function deleteJson(url) {
@@ -1072,6 +1030,40 @@
         channelB: { gain: gainB, offset: parseFloat($('cal-b-offset').value) || 0 },
       });
     });
+  });
+
+  // -- check-ins (Feature 7): the timer's own check-in interval is only a
+  // webhook/log *reminder* (see session_runner.rs) -- it never calls
+  // POST /api/session/checkin itself, so this form is the only thing
+  // that actually records one. Not gated on a session being active: a
+  // check-in is meaningful any time, not just when the timer prompts it.
+  const checkinColorToggle = $('checkin-color-toggle');
+  let checkinColor = 'green';
+  checkinColorToggle.querySelectorAll('.checkin-color-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      checkinColor = btn.dataset.color;
+      checkinColorToggle.querySelectorAll('.checkin-color-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    });
+  });
+
+  $('checkin-submit').addEventListener('click', async () => {
+    const arousal = parseInt($('checkin-arousal').value, 10);
+    if (!Number.isFinite(arousal) || arousal < 1 || arousal > 10) {
+      showToast('arousal must be 1-10');
+      return;
+    }
+    const notesInput = $('checkin-notes');
+    const ok = await postJson('/api/session/checkin', {
+      color: checkinColor,
+      arousal,
+      discomfort: $('checkin-discomfort').value,
+      notes: notesInput.value.trim() || undefined,
+    });
+    if (ok) {
+      vibrate(15);
+      notesInput.value = '';
+      showToast('Check-in logged');
+    }
   });
 
   // -- tap-to-copy pairing links -----------------------------------------
