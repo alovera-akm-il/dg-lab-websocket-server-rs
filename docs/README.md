@@ -8,11 +8,13 @@
   control panel's HTTP API, including webhook payload shapes
 - [Usage guide](usage.md) — running the server, operating the control panel,
   integrating your own controller against V3 or V4, wiring up the webhook
-- [Channel playlists proposal](channel-playlists-proposal.md) — design
-  exploration for per-channel pulse playlists, not implemented
-- [Channel playlists implementation plan](channel-playlists-implementation.md)
-  — concrete Rust-side design for the above (data model, task/HTTP/SSE
-  design, edge cases, testing plan), not implemented
+- [Channel playlists proposal](channel-playlists-proposal.md) and
+  [implementation plan](channel-playlists-implementation.md) — the original
+  design exploration and Rust-side design doc for per-channel pulse
+  playlists. Both are archival: the feature they describe has since shipped
+  (see [Playlists](api.md#playlists) in the API reference and
+  `src/panel/playlist.rs`/`playlist_runner.rs`) and the docs are kept only
+  for the design rationale, not as a status indicator
 
 See the top-level [README](../README.md) for installation, the environment
 variable reference, and quick-start instructions. See the top-level

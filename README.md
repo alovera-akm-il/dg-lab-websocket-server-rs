@@ -59,7 +59,7 @@ cargo clippy --all-targets
 cargo doc --no-deps --open   # browse the generated API docs
 ```
 
-Integration tests (`tests/v3_integration.rs`, `tests/v4_integration.rs`) spin up a real server on an ephemeral port and drive it with a `tokio-tungstenite` client, covering each protocol's connect/pair/message/disconnect happy path plus one failure path. `tests/panel_v4_integration.rs` drives the panel's V4 leg the same way end-to-end: a simulated APP attaches, reports a device, and the panel's HTTP API is used to confirm real `device.op`/`device.op.clear` wire frames arrive with the exact expected shape. `tests/panel_webhook_integration.rs` does the same for the webhook feature over V3. The control panel's unit tests cover the dual-protocol state machine (`src/panel/state.rs`), V3 and V4 frame construction (`commands.rs`, `v4_commands.rs`), device status/button-feedback parsing on both protocols (`relay_client.rs`, `v4_client.rs`), and QR/URL building for both (`qrcode.rs`), plus a round-trip check that every bundled preset parses correctly through the same pulse-waveform code the V3 relay itself uses (`src/panel/presets.rs`).
+Integration tests (`tests/v3_integration.rs`, `tests/v4_integration.rs`) spin up a real server on an ephemeral port and drive it with a `tokio-tungstenite` client, covering each protocol's connect/pair/message/disconnect happy path plus one failure path. `tests/panel_v4_integration.rs` drives the panel's V4 leg the same way end-to-end: a simulated APP attaches, reports a device, and the panel's HTTP API is used to confirm real `device.op`/`device.op.clear` wire frames arrive with the exact expected shape. `tests/panel_webhook_integration.rs` does the same for the webhook feature over V3. `tests/panel_ramp_integration.rs` and `tests/panel_playlist_integration.rs` do the same for the ramp and playlist runner tasks — proof that those background tasks actually drive their schedules/queues over the wire, not just that the HTTP calls are accepted. The control panel's unit tests cover the dual-protocol state machine (`src/panel/state.rs`), V3 and V4 frame construction (`commands.rs`, `v4_commands.rs`), device status/button-feedback parsing on both protocols (`relay_client.rs`, `v4_client.rs`), QR/URL building for both (`qrcode.rs`), calibration math (`calibration.rs`), ramp/session-timer scheduling (`ramp.rs`, `session.rs`), and playlist/template/recipe/button-map persistence and validation, plus a round-trip check that every bundled preset parses correctly through the same pulse-waveform code the V3 relay itself uses (`src/panel/presets.rs`).
 
 ## Configuration
 
@@ -82,6 +82,7 @@ Environment variables, read at startup:
 | `PANEL_PORT` | panel | `40000` | Control panel listen port |
 | `PANEL_PUBLIC_WS_BASE` | panel | unset | Overrides the pairing QR's `scheme://host` (e.g. `wss://relay.example.com`) for a reverse-proxy/TLS deployment. When unset, it's derived per-request from the browser's own `Host` header (falling back to the machine's autodetected LAN IP if that header is a loopback address) — see below |
 | `PANEL_WEBHOOK_URL` | panel | unset | Initial outbound webhook URL (see below); can also be set/changed/cleared at runtime from the panel page or via `POST /api/webhook` |
+| `PANEL_DATA_DIR` | panel | `panel-data` | Directory for the panel's persisted JSON stores: `templates.json`, `recipes.json`, `button-map.json`, `calibration.json` (session timer/ramp/playlist state is in-memory only and does not survive a restart) |
 
 > **Note:** because both relay protocols run in one process, `PORT`/`HEARTBEAT_INTERVAL`/`IDLE_TIMEOUT`/`LOG_LEVEL`/`VERBOSE` are shared variable names — each protocol falls back to its own default when unset, but setting one of these explicitly affects both servers. If you need to override just one protocol's port, run this binary once per protocol with different environment, or edit the defaults in [`src/v3/config.rs`](src/v3/config.rs) / [`src/v4/config.rs`](src/v4/config.rs).
 
@@ -116,6 +117,49 @@ The panel is just another controller on each protocol — it connects to the loc
 **Pairing over WiFi:** the QR must encode an address your phone can actually reach — not `127.0.0.1` or `localhost`, which the phone would resolve to itself. The panel handles this automatically: the address it embeds is normally read off the `Host` header of whichever request loaded the page, so opening `http://<this machine's LAN IP>:40000/` from any device just works. If you instead open the panel via `http://localhost:40000` (e.g. checking it from the same machine the server runs on), it falls back to this machine's LAN IP, autodetected at startup via outbound route selection (logged at startup as `detected LAN IP ...`) — no packets are sent, it just asks the OS which interface it would use to reach the internet. On a multi-homed machine (VPN, multiple NICs) this heuristic can occasionally pick the wrong interface; if so, set `PANEL_PUBLIC_WS_BASE=ws://<the-right-ip>` to force it. Both QR schemes are confirmed working against a real DG-LAB APP.
 
 **On the pulse waveform presets:** the 44 bundled presets (24 "Coyote", 20 "OVC") are the official waveform library from [`dglab-kit`](https://github.com/dungeonlab-open/dglab-kit) (its `COYOTE_WAVEFORMS`/`OVC_WAVEFORMS`), not placeholder data — each frame was cross-verified byte-for-byte against the upstream source before being committed here (see `src/panel/presets.rs`). "Coyote" targets Coyote 3.0 hardware; "OVC" (Opossum) patterns are bundled for completeness but designed for different hardware and may not feel meaningful on a Coyote device. For anything not in this list, paste your own frame data into the custom waveform field — on V4 it must be in the `"<prefix>:[...]"` frame-array format (no raw-legacy-string fallback, unlike V3).
+
+### HTTP API
+
+`http://<host>:40000` also exposes the JSON API driving the page above, with
+no authentication — intended for trusted-network/localhost use, and usable
+directly by your own scripts/automation instead of the bundled UI. Full
+request/response shapes, status codes, and behavioral notes for every one of
+these are in [`docs/api.md`](docs/api.md#control-panel-http).
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/events` | Server-Sent Events stream of the panel's live state (pairing, strength, playlists, ramps, session timer, calibration, ...) |
+| `GET` | `/api/presets` | The bundled pulse-waveform preset catalog |
+| `GET` | `/api/qr/{v3\|v4}` | The pairing QR for one protocol, on demand |
+| `POST` | `/api/strength` | Increase / decrease / set a channel's strength |
+| `POST` | `/api/clear` | Clear a channel (cancels any in-flight pulse) |
+| `POST` | `/api/pulse` | Send a pulse waveform |
+| `POST` | `/api/limit` | Set/clear a channel's operator upper limit |
+| `GET`/`POST` | `/api/calibration` | Read/set per-channel intensity calibration (gain/offset) |
+| `POST` | `/api/ramp` | Start (or replace) a strength ramp on a channel (linear / random-walk / hold) |
+| `POST` | `/api/ramp/stop` | Stop a channel's active ramp |
+| `POST` | `/api/session/timer` | Configure and start the session timer (check-ins, phase gates) |
+| `POST` | `/api/session/timer/pause` \| `/play` | Pause / resume the session timer |
+| `POST` | `/api/session/end` | End the session timer early |
+| `POST` | `/api/session/checkin` | Log a subjective check-in (color/arousal/discomfort/notes) |
+| `POST` | `/api/session/log-config` | Configure the file-based JSONL event log |
+| `POST` | `/api/session/start` | Force a fresh event-log session file |
+| `POST` | `/api/session/stop` | Emergency stop: clear both channels, stop playlists/ramps/timer |
+| `POST` | `/api/session/pause` \| `/resume` | Pause/resume everything: zero both channels, pause/resume playlists/ramps/timer |
+| `GET` | `/api/session/recipes` | List saved recipe names |
+| `GET`/`POST`/`DELETE` | `/api/session/recipes/{name}` | Get / save / remove one recipe |
+| `POST` | `/api/session/recipes/{name}/start` | Start every piece a recipe defines (timer + ramps + playlists) |
+| `GET`/`POST` | `/api/button-map` | Read/replace the physical-button-press → action mapping |
+| `POST` | `/api/webhook` | Set/clear the outbound webhook URL |
+| `POST` | `/api/reconnect` | Force a fresh relay connection (new controller id/QR) on both protocols |
+| `POST` | `/api/playlist/{channel}/items` | Add a pulse or gap entry to that channel's playlist |
+| `DELETE` | `/api/playlist/{channel}/items/{id}` | Remove one playlist entry |
+| `POST` | `/api/playlist/{channel}/reorder` | Reorder playlist entries |
+| `POST` | `/api/playlist/{channel}/settings` | Set shuffle / loop-playback |
+| `POST` | `/api/playlist/{channel}/play` \| `/pause` \| `/stop` | Control playlist playback |
+| `POST` | `/api/playlist/{channel}/load-template` | Replace a channel's queue with a saved template |
+| `GET` | `/api/templates` | List saved playlist template names |
+| `GET`/`POST`/`DELETE` | `/api/templates/{name}` | Get / save / remove one template |
 
 ### Webhook
 
@@ -209,7 +253,13 @@ src/
   panel/         Control panel: config, state (dual V3+V4 leg tracking), relay_client (V3 loopback
                  client), v4_client (V4 loopback client), commands / v4_commands (wire frame
                  builders), presets, qrcode, webhook, assets (rust-embed'd frontend), handler
-                 (page + SSE + API, routes to whichever leg is active)
+                 (page + SSE + API, routes to whichever leg is active), calibration (per-channel
+                 gain/offset), ramp / ramp_runner (strength ramp profiles), session /
+                 session_runner (session timer), playlist / playlist_runner (per-channel pulse
+                 queues), templates / recipe (named, persisted playlist/session presets),
+                 button_map (physical-button → action mapping), event_log (JSONL session
+                 recording), persistence (PANEL_DATA_DIR JSON store helpers), network (LAN IP
+                 autodetection)
   panel/assets/  The panel's frontend: index.html, style.css, app.js — plain files on disk,
                  embedded into the binary at compile time via rust-embed (read live from disk
                  in debug builds instead, so editing them doesn't need a rebuild)
@@ -218,6 +268,8 @@ tests/
   v4_integration.rs
   panel_v4_integration.rs
   panel_webhook_integration.rs
+  panel_ramp_integration.rs
+  panel_playlist_integration.rs
 ```
 
 Run `cargo doc --no-deps --open` for the full per-module API documentation, including the design notes on why state is one `Mutex` per protocol, how `CancellationToken`s drive idle timers and pulse-sequence replacement, and where this port deliberately diverges from the original TS server's edge-case behavior (each such spot is called out in the source with the reasoning).
